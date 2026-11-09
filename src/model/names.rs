@@ -5,9 +5,12 @@
 //! on (artist, [`title_key`]). Changing a rule here changes what counts as "the
 //! same", so bump [`KEY_RULES`] with it: the store then rebuilds its keys.
 
+use unicode_normalization::UnicodeNormalization;
+use unicode_normalization::char::is_combining_mark;
+
 /// The version of the rules below. The store rebuilds every key when it was
 /// keyed under an older version.
-pub const KEY_RULES: u32 = 2;
+pub const KEY_RULES: u32 = 3;
 
 /// Words that mark a title segment as a version of the song rather than part of
 /// its name: "Song - Remastered 2011", "Song (Live)", "Song [Radio Edit]".
@@ -36,24 +39,53 @@ const CREDIT_WORDS: &[&str] = &["feat", "ft", "featuring", "with"];
 /// matching sources that drop the apostrophe.
 const APOSTROPHES: [char; 4] = ['\'', '\u{2019}', '\u{2018}', '`'];
 
-/// Lowercase, letters and digits only, single spaces; "&" reads as "and" and
-/// "$" as "s", so "Travi$ Scott" is "Travis Scott".
+/// Lowercase, without accents, letters and digits only, single spaces; "&"
+/// reads as "and" and a "$" in a word as "s". So "Alejandra Guzmán" is
+/// "Alejandra Guzman", and "Travi$ Scott" is "Travis Scott".
 ///
 /// `"The  Beatles!"` and `"the beatles"` both become `"the beatles"`. A name made
 /// only of punctuation (the band "!!!") keeps its punctuation, so it never
 /// collapses to an empty key.
 pub fn name_key(name: &str) -> String {
-    let lowered = name
-        .to_lowercase()
+    let lowered = without_accents(&name.to_lowercase())
         .replace(APOSTROPHES, "")
-        .replace('&', " and ")
-        .replace('$', "s");
-    let key = words(&lowered).join(" ");
+        .replace('&', " and ");
+    let key = words(&dollars_as_s(&lowered)).join(" ");
     if key.is_empty() {
         name.trim().to_lowercase()
     } else {
         key
     }
+}
+
+/// "é" becomes "e" and "ñ" becomes "n"; letters without a base form ("ø") and
+/// other scripts are kept as they are.
+fn without_accents(s: &str) -> String {
+    s.nfd().filter(|c| !is_combining_mark(*c)).nfc().collect()
+}
+
+/// A run of "$" touching a letter or digit spells "s" ("A$AP", "Bada$$",
+/// "$uicideboy$"); on its own ("¥$") it stays punctuation.
+fn dollars_as_s(name: &str) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    let mut out = String::with_capacity(name.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '$' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let end = (i..chars.len())
+            .find(|&j| chars[j] != '$')
+            .unwrap_or(chars.len());
+        let in_word = (i > 0 && chars[i - 1].is_alphanumeric())
+            || chars.get(end).is_some_and(|c| c.is_alphanumeric());
+        let letter = if in_word { 's' } else { '$' };
+        out.extend(std::iter::repeat_n(letter, end - i));
+        i = end;
+    }
+    out
 }
 
 /// A title reduced to the song itself, for "have I heard this?" checks.
@@ -131,7 +163,7 @@ mod tests {
         assert_eq!(name_key("The  Beatles!"), "the beatles");
         assert_eq!(name_key("AC/DC"), "ac dc");
         assert_eq!(name_key("Simon & Garfunkel"), "simon and garfunkel");
-        assert_eq!(name_key("Sigur Rós"), "sigur rós");
+        assert_eq!(name_key("Sigur Rós"), "sigur ros");
         assert_eq!(name_key("Don’t Stop"), name_key("Dont Stop"));
     }
 
@@ -140,6 +172,17 @@ mod tests {
         assert_eq!(name_key("Travi$ Scott"), name_key("Travis Scott"));
         assert_eq!(name_key("A$AP Rocky"), "asap rocky");
         assert_eq!(name_key("Joey Bada$$"), "joey badass");
+        assert_eq!(name_key("$uicideboy$"), "suicideboys");
+        assert_eq!(name_key("¥$"), "¥$", "a lone $ is punctuation");
+    }
+
+    #[test]
+    fn accents_dont_split_a_name() {
+        assert_eq!(name_key("Alejandra Guzmán"), name_key("Alejandra Guzman"));
+        assert_eq!(name_key("ROSALÍA"), "rosalia");
+        assert_eq!(name_key("Beyoncé"), "beyonce");
+        assert_eq!(name_key("아이유"), "아이유", "other scripts stay composed");
+        assert_eq!(title_key("Canción Bonita"), title_key("Cancion Bonita"));
     }
 
     #[test]

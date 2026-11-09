@@ -242,7 +242,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(tracks, 2);
-        assert_eq!(store.setting(KEYED_UNDER).unwrap().as_deref(), Some("2"));
+        assert_eq!(
+            store.setting(KEYED_UNDER).unwrap(),
+            Some(KEY_RULES.to_string())
+        );
     }
 
     #[test]
