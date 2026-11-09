@@ -56,17 +56,30 @@ impl Store {
         })
     }
 
-    /// When the newest polled listen started: where the next poll picks up.
-    pub fn latest_polled_start(&self) -> Result<Option<Timestamp>> {
-        let ms: Option<i64> = self.conn.query_row(
-            "SELECT MAX(started_at) FROM plays WHERE provenance IN (?1, ?2)",
+    /// Where the next poll of a recently-played feed should start reading.
+    ///
+    /// Just before the newest polled listen, so that listen (still pending
+    /// when it was last read) is read again with its successor and completed.
+    /// But never before the end of the imported history: the export already
+    /// holds those listens, under slightly different start times, so polling
+    /// them again would count them twice.
+    pub fn poll_cursor(&self) -> Result<Option<Timestamp>> {
+        let (polled, history_end): (Option<i64>, Option<i64>) = self.conn.query_row(
+            "SELECT MAX(CASE WHEN provenance IN (?1, ?2) THEN started_at END),
+                    MAX(CASE WHEN provenance = ?3 THEN started_at + COALESCE(ms_played, 0) END)
+             FROM plays",
             params![
                 Provenance::Poll.as_str(),
-                Provenance::PollEstimated.as_str()
+                Provenance::PollEstimated.as_str(),
+                Provenance::History.as_str()
             ],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        ms.map(from_ms).transpose().map_err(Into::into)
+        let cursor = match (polled.map(|ms| ms - 1), history_end) {
+            (Some(p), Some(h)) => Some(p.max(h)),
+            (p, h) => p.or(h),
+        };
+        cursor.map(from_ms).transpose().map_err(Into::into)
     }
 
     /// Every play on file, oldest first.
@@ -165,6 +178,22 @@ mod tests {
         s.record_listens(&[listen("A", 100, Some(1), Provenance::Poll)])
             .unwrap();
         assert_eq!(s.plays().unwrap()[0].ms_played, Some(90_000));
+    }
+
+    #[test]
+    fn the_poll_cursor_rereads_the_newest_poll_but_not_the_history() {
+        let s = Store::open_in_memory().unwrap();
+        assert_eq!(s.poll_cursor().unwrap(), None);
+
+        s.record_listens(&[listen("polled", 100, None, Provenance::Poll)])
+            .unwrap();
+        let just_before = Timestamp::from_millisecond(100_000 - 1).unwrap();
+        assert_eq!(s.poll_cursor().unwrap(), Some(just_before));
+
+        s.import_history(&[listen("history", 50, Some(200_000), Provenance::History)])
+            .unwrap();
+        let history_end = Timestamp::from_millisecond(250_000).unwrap();
+        assert_eq!(s.poll_cursor().unwrap(), Some(history_end));
     }
 
     #[test]

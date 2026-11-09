@@ -8,6 +8,13 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, bail};
 use log::{debug, warn};
 
+/// Sent with every request, so services can tell who is calling.
+pub const USER_AGENT: &str = concat!(
+    "novelty-weekly/",
+    env!("CARGO_PKG_VERSION"),
+    " ( https://github.com/KevinNavarreteParra/novelty-weekly )"
+);
+
 /// Give up instead of sleeping when a service asks for a longer wait than
 /// this; a multi-hour Retry-After means a quota, not a blip.
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(120);

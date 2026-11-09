@@ -23,7 +23,12 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Log in to Spotify once and store the refresh token.
-    Auth,
+    Auth {
+        /// Paste the address the browser lands on, instead of listening for
+        /// the redirect (for a browser on another machine).
+        #[arg(long)]
+        paste: bool,
+    },
     /// Import a Spotify Extended Streaming History export (safe to re-run).
     IngestHistory {
         /// The export's .zip, or a directory of its JSON files.

@@ -1,22 +1,27 @@
 //! One function per CLI command. Each one wires the store, the integrations and
 //! the engine together; none of them holds recommendation logic itself.
 
+mod auth;
 mod ingest;
+mod poll;
 
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 
 use crate::cli::{Cli, Command};
-use crate::config::{Config, Paths};
+use crate::config::{Config, Paths, secret};
+use crate::integrations::cache::Cache;
+use crate::integrations::http::USER_AGENT;
+use crate::integrations::spotify::Spotify;
 use crate::store::Store;
 
 pub fn run(cli: Cli) -> Result<()> {
     let app = App::load(cli.home)?;
     match cli.command {
         Command::IngestHistory { path } => ingest::history(&app, &path),
-        Command::Auth => not_yet("auth"),
-        Command::Poll => not_yet("poll"),
+        Command::Auth { paste } => auth::run(&app, paste),
+        Command::Poll => poll::run(&app),
         Command::Build(_) => not_yet("build"),
         Command::Report(_) => not_yet("report"),
         Command::Ledger { .. } => not_yet("ledger"),
@@ -40,6 +45,21 @@ impl App {
     fn open_store(&self) -> Result<Store> {
         self.paths.ensure_home()?;
         Store::open(&self.paths.database())
+    }
+
+    fn open_cache(&self) -> Result<Cache> {
+        self.paths.ensure_home()?;
+        Cache::open(&self.paths.cache())
+    }
+
+    /// The listening service. Needs `SPOTIFY_CLIENT_ID` and a prior `novelty auth`.
+    fn spotify(&self) -> Result<Spotify> {
+        Spotify::connect(
+            secret("SPOTIFY_CLIENT_ID")?,
+            self.paths.spotify_token(),
+            self.open_cache()?,
+            USER_AGENT,
+        )
     }
 }
 
