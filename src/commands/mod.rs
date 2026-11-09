@@ -4,13 +4,14 @@
 mod auth;
 pub mod build;
 mod ingest;
+mod ledger;
 pub mod poll;
 
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 
-use crate::cli::{Cli, Command};
+use crate::cli::{Cli, Command, LedgerAction};
 use crate::config::{Config, Paths, secret};
 use crate::integrations::cache::Cache;
 use crate::integrations::http::USER_AGENT;
@@ -26,7 +27,9 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Poll => poll::run(&app),
         Command::Build(args) => build::run(&app, &args),
         Command::Report(_) => not_yet("report"),
-        Command::Ledger { .. } => not_yet("ledger"),
+        Command::Ledger {
+            action: LedgerAction::Show { week },
+        } => ledger::show(&app, week.as_deref()),
         Command::Block { .. } => not_yet("block"),
     }
 }
