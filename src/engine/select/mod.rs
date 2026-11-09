@@ -5,7 +5,9 @@
 //!    that is least like what the pool already picked.
 //! 3. Global caps apply throughout: one track per new artist, two per known
 //!    artist, and no dominant tag over a quarter of the playlist.
-//! 4. Slots a pool can't fill pass to the others (backfill).
+//! 4. Slots a pool can't fill pass to the others (backfill). If that still
+//!    leaves slots empty, a last pass lifts the tag cap (never the artist
+//!    caps): the caps shape the playlist, they don't shrink it.
 //! 5. [`order::interleave`] arranges the result.
 
 pub mod allocate;
@@ -58,6 +60,8 @@ pub struct Selection {
     pub planned: BTreeMap<Pool, usize>,
     /// Slots a pool couldn't fill. Other pools covered them where they could.
     pub shortfall: BTreeMap<Pool, usize>,
+    /// Whether filling the playlist needed the dominant-tag cap lifted.
+    pub tag_cap_relaxed: bool,
 }
 
 /// `tags` gives each candidate artist's tags: as a vector for MMR, and the
@@ -91,17 +95,39 @@ pub fn select(
         .filter(|(_, missing)| *missing > 0)
         .collect();
 
-    // Backfill: hand missing slots round-robin to pools with candidates left.
     let mut missing: usize = shortfall.values().sum();
+    missing = backfill(&mut state, &mut ranked, &mut picks, &planned, missing);
+    let tag_cap_relaxed = missing > 0;
+    if tag_cap_relaxed {
+        state.relax_tag_cap = true;
+        backfill(&mut state, &mut ranked, &mut picks, &planned, missing);
+    }
+
+    Selection {
+        picks: order::interleave(picks),
+        planned,
+        shortfall,
+        tag_cap_relaxed,
+    }
+}
+
+/// Hands `missing` slots round-robin to pools with candidates left. Returns
+/// how many stay empty.
+fn backfill(
+    state: &mut Picked,
+    ranked: &mut BTreeMap<Pool, Vec<Candidate>>,
+    picks: &mut BTreeMap<Pool, Vec<Candidate>>,
+    planned: &BTreeMap<Pool, usize>,
+    mut missing: usize,
+) -> usize {
     while missing > 0 {
         let mut progressed = false;
-        for &pool in planned.keys() {
+        for (&pool, &slots) in planned {
             if missing == 0 {
                 break;
             }
             let pool_picks = picks.entry(pool).or_default();
-            let slots = planned[&pool].max(1);
-            if let Some(pick) = state.best_next(ranked.get_mut(&pool), pool_picks, slots) {
+            if let Some(pick) = state.best_next(ranked.get_mut(&pool), pool_picks, slots.max(1)) {
                 pool_picks.push(pick);
                 missing -= 1;
                 progressed = true;
@@ -111,12 +137,7 @@ pub fn select(
             break;
         }
     }
-
-    Selection {
-        picks: order::interleave(picks),
-        planned,
-        shortfall,
-    }
+    missing
 }
 
 /// Each pool's candidates, most relevant first, with relevance rescaled to
@@ -149,6 +170,8 @@ struct Picked<'a> {
     tracks: HashSet<TrackId>,
     per_artist: HashMap<ArtistId, u32>,
     per_dominant_tag: HashMap<&'a str, usize>,
+    /// Set for the last backfill pass, when the tag cap gives way.
+    relax_tag_cap: bool,
 }
 
 impl<'a> Picked<'a> {
@@ -160,6 +183,7 @@ impl<'a> Picked<'a> {
             tracks: HashSet::new(),
             per_artist: HashMap::new(),
             per_dominant_tag: HashMap::new(),
+            relax_tag_cap: false,
         }
     }
 
@@ -172,12 +196,12 @@ impl<'a> Picked<'a> {
         slots: usize,
     ) -> Option<Candidate> {
         let ranked = ranked?;
-        // Caps only tighten as picks accumulate, so a candidate they rule out
-        // now is out for good.
-        ranked.retain(|c| self.allows(c));
-        let window = (self.params.mmr_window * slots).min(ranked.len());
+        let window: Vec<usize> = (0..ranked.len())
+            .filter(|&i| self.allows(&ranked[i]))
+            .take(self.params.mmr_window * slots)
+            .collect();
         let lambda = self.params.mmr_lambda;
-        let best = (0..window).max_by(|&a, &b| {
+        let best = window.into_iter().max_by(|&a, &b| {
             let score = |i: usize| {
                 let c = &ranked[i];
                 let redundancy = pool_picks
@@ -207,6 +231,7 @@ impl<'a> Picked<'a> {
             return false;
         }
         match self.dominant_tag(c.artist) {
+            Some(_) if self.relax_tag_cap => true,
             Some(tag) => self.per_dominant_tag.get(tag).copied().unwrap_or(0) < self.tag_limit(),
             None => true,
         }
@@ -339,6 +364,30 @@ mod tests {
 
     #[test]
     fn a_dominant_tag_is_capped_at_a_quarter() {
+        // 40 shoegaze candidates, more relevant than 40 untagged ones:
+        // shoegaze still stops at 10.
+        let candidates: Vec<Candidate> = (0..80)
+            .map(|i| candidate(Pool::Far, i, i, if i < 40 { 1.0 } else { 0.1 }))
+            .collect();
+        let tags: ArtistTags = (0..40)
+            .map(|i| (ArtistId(i), vec![ArtistTag::new("shoegaze", 1.0)]))
+            .collect();
+        let sel = select(
+            candidates,
+            &posteriors(),
+            &tags,
+            &Profile::default(),
+            &params(40),
+            &mut StdRng::seed_from_u64(1),
+        );
+        assert_eq!(sel.picks.len(), 40);
+        let shoegaze = sel.picks.iter().filter(|c| c.artist.0 < 40).count();
+        assert_eq!(shoegaze, 10);
+        assert!(!sel.tag_cap_relaxed);
+    }
+
+    #[test]
+    fn the_tag_cap_gives_way_rather_than_leave_slots_empty() {
         let candidates: Vec<Candidate> = (0..40).map(|i| candidate(Pool::Far, i, i, 1.0)).collect();
         let tags: ArtistTags = (0..40)
             .map(|i| (ArtistId(i), vec![ArtistTag::new("shoegaze", 1.0)]))
@@ -351,7 +400,8 @@ mod tests {
             &params(40),
             &mut StdRng::seed_from_u64(1),
         );
-        assert_eq!(sel.picks.len(), 10);
+        assert_eq!(sel.picks.len(), 40);
+        assert!(sel.tag_cap_relaxed);
     }
 
     #[test]
