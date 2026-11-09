@@ -124,7 +124,7 @@ struct Row {
     spotify_track_uri: Option<String>,
     reason_start: Option<String>,
     reason_end: Option<String>,
-    /// Unreliable: sometimes null when it was a skip.
+    /// Unreliable: null or false on many `fwdbtn` endings.
     skipped: Option<bool>,
 }
 
@@ -163,6 +163,10 @@ impl Row {
 }
 
 /// Maps `reason_end`. An explicit `skipped: true` wins over the reason.
+///
+/// Values seen in real exports: trackdone, endplay, fwdbtn, backbtn, logout,
+/// remote (another device took over), trackerror, unexpected-exit,
+/// unexpected-exit-while-paused, unknown.
 fn ending(reason_end: Option<&str>, skipped: Option<bool>) -> Ending {
     if skipped == Some(true) {
         return Ending::Skipped;
@@ -172,19 +176,24 @@ fn ending(reason_end: Option<&str>, skipped: Option<bool>) -> Ending {
         Some("fwdbtn" | "backbtn" | "clickrow" | "clickside" | "popup" | "uriopen") => {
             Ending::Skipped
         }
-        Some("endplay" | "logout" | "trackerror" | "unexpected-exit")
+        Some("endplay" | "logout" | "remote" | "trackerror" | "unexpected-exit")
         | Some("unexpected-exit-while-paused") => Ending::Interrupted,
         _ => Ending::Unknown,
     }
 }
 
 /// Maps `reason_start`.
+///
+/// Values seen in real exports: trackdone, fwdbtn, clickrow, playbtn, backbtn,
+/// appload, remote, trackerror, unknown. None says "autoplay": an autoplayed
+/// track starts with trackdone like any other next track.
 fn started_by(reason_start: Option<&str>) -> StartedBy {
     match reason_start {
-        Some("clickrow" | "clickside" | "playbtn" | "fwdbtn" | "backbtn" | "popup" | "uriopen") => {
-            StartedBy::Listener
-        }
-        Some("trackdone") => StartedBy::Sequence,
+        Some(
+            "clickrow" | "clickside" | "playbtn" | "fwdbtn" | "backbtn" | "popup" | "uriopen"
+            | "remote",
+        ) => StartedBy::Listener,
+        Some("trackdone" | "trackerror") => StartedBy::Sequence,
         Some("autoplay") => StartedBy::Autoplay,
         _ => StartedBy::Unknown,
     }
@@ -246,6 +255,13 @@ mod tests {
         let song = &parse(SAMPLE).unwrap()[1];
         assert_eq!(song.ending, Ending::Skipped);
         assert_eq!(song.started_by, StartedBy::Sequence);
+    }
+
+    #[test]
+    fn another_device_taking_over_is_an_interruption() {
+        assert_eq!(ending(Some("remote"), Some(false)), Ending::Interrupted);
+        assert_eq!(started_by(Some("remote")), StartedBy::Listener);
+        assert_eq!(ending(Some("unknown"), None), Ending::Unknown);
     }
 
     #[test]
