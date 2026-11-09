@@ -5,4 +5,6 @@
 //! them out. Recommendation logic never lives here, and a service's wire
 //! format never leaks past its module.
 
+pub mod cache;
+pub mod http;
 pub mod spotify;

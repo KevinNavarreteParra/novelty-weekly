@@ -1,8 +1,8 @@
 //! Where state lives and how a build is tuned.
 //!
 //! Everything sits in one home directory ($NOVELTY_HOME, default
-//! `$XDG_DATA_HOME/novelty`): `config.toml`, the database, and the Spotify
-//! token. Secrets never go in `config.toml`; they come from the environment
+//! `$XDG_DATA_HOME/novelty`): `config.toml`, the database, a disposable
+//! cache of API responses, and the Spotify token. Secrets never go in `config.toml`; they come from the environment
 //! (see `.env.example`).
 
 use std::env;
@@ -35,6 +35,11 @@ impl Paths {
 
     pub fn database(&self) -> PathBuf {
         self.home.join("novelty.db")
+    }
+
+    /// Cached API responses; safe to delete.
+    pub fn cache(&self) -> PathBuf {
+        self.home.join("cache.db")
     }
 
     /// The Spotify refresh token, written with owner-only permissions.

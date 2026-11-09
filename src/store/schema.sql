@@ -109,15 +109,6 @@ CREATE TABLE ledger (
 );
 CREATE INDEX ledger_by_week ON ledger (week);
 
--- Raw API responses, so re-running a build doesn't re-fetch. Misses are
--- cached too.
-CREATE TABLE api_cache (
-    key        TEXT PRIMARY KEY,
-    body       TEXT NOT NULL,
-    fetched_at INTEGER NOT NULL,
-    ttl_s      INTEGER NOT NULL
-);
-
 -- One row per poll or build, for alerting on repeated failures.
 CREATE TABLE runs (
     run_id      INTEGER PRIMARY KEY,
