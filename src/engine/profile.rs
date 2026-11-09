@@ -1,7 +1,7 @@
 //! The taste profile (spec §7.1): how much I like each artist, and what I have
 //! already heard. Rebuilt from every play on each build, so it is never stale.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use jiff::Timestamp;
 use rand::Rng;
@@ -47,8 +47,10 @@ impl Default for SeedPlan {
 #[derive(Debug, Clone, Default)]
 pub struct Profile {
     affinity: HashMap<ArtistId, f64>,
-    track_plays: HashMap<TrackId, u32>,
-    artist_plays: HashMap<ArtistId, u32>,
+    /// Tracks I have heard, in any version.
+    heard: HashSet<TrackId>,
+    /// Artists I have heard.
+    known: HashSet<ArtistId>,
     /// Artists with positive affinity, best first.
     ranked: Vec<(ArtistId, f64)>,
 }
@@ -63,12 +65,12 @@ impl Profile {
     /// still-pending listens count as heard but say nothing about taste.
     pub fn build(plays: &[Play], now: Timestamp, params: &ProfileParams) -> Profile {
         let mut affinity: HashMap<ArtistId, f64> = HashMap::new();
-        let mut track_plays: HashMap<TrackId, u32> = HashMap::new();
-        let mut artist_plays: HashMap<ArtistId, u32> = HashMap::new();
+        let mut heard: HashSet<TrackId> = HashSet::new();
+        let mut known: HashSet<ArtistId> = HashSet::new();
 
         for play in plays {
-            *track_plays.entry(play.track).or_default() += 1;
-            *artist_plays.entry(play.artist).or_default() += 1;
+            heard.insert(play.track);
+            known.insert(play.artist);
 
             let direction = match play.verdict() {
                 Some(Verdict::Completed) => 1.0,
@@ -92,8 +94,8 @@ impl Profile {
 
         Profile {
             affinity,
-            track_plays,
-            artist_plays,
+            heard,
+            known,
             ranked,
         }
     }
@@ -102,14 +104,14 @@ impl Profile {
         self.affinity.get(&artist).copied().unwrap_or(0.0)
     }
 
-    /// Lifetime listens of a track, any version.
-    pub fn track_plays(&self, track: TrackId) -> u32 {
-        self.track_plays.get(&track).copied().unwrap_or(0)
+    /// Whether I have heard the track, in any version.
+    pub fn heard(&self, track: TrackId) -> bool {
+        self.heard.contains(&track)
     }
 
-    /// Lifetime listens of an artist.
-    pub fn artist_plays(&self, artist: ArtistId) -> u32 {
-        self.artist_plays.get(&artist).copied().unwrap_or(0)
+    /// Whether I have heard the artist.
+    pub fn knows(&self, artist: ArtistId) -> bool {
+        self.known.contains(&artist)
     }
 
     /// Artists I like, best first.
@@ -223,8 +225,8 @@ mod tests {
         let p = Profile::build(&plays, now(), &params());
         assert_eq!(p.affinity(ArtistId(3)), 0.0);
         assert!(p.ranked_artists().is_empty());
-        assert_eq!(p.artist_plays(ArtistId(3)), 1);
-        assert_eq!(p.track_plays(TrackId(30)), 1);
+        assert!(p.knows(ArtistId(3)));
+        assert!(p.heard(TrackId(30)));
     }
 
     #[test]

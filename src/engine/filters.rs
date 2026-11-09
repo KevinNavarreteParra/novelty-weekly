@@ -39,13 +39,13 @@ pub struct Filters<'a> {
 
 impl Filters<'_> {
     pub fn check(&self, c: &Candidate) -> Result<(), Rejection> {
-        if self.profile.track_plays(c.track) > 0 {
+        if self.profile.heard(c.track) {
             return Err(Rejection::HeardTrack);
         }
         if self.recommended.contains(&c.track) {
             return Err(Rejection::AlreadyRecommended);
         }
-        if c.pool != Pool::Deep && self.profile.artist_plays(c.artist) > 0 {
+        if c.pool != Pool::Deep && self.profile.knows(c.artist) {
             return Err(Rejection::HeardArtist);
         }
         let length = self.durations.get(&c.track);

@@ -130,7 +130,7 @@ pub fn from_tag_chart(
     popular: &PopularTracks,
     per_artist: usize,
 ) -> Vec<Candidate> {
-    let unheard = chart.iter().filter(|a| profile.artist_plays(**a) == 0);
+    let unheard = chart.iter().filter(|a| !profile.knows(**a));
     let why = || Why::RareTag {
         tag: tag.to_owned(),
         share,
@@ -156,7 +156,7 @@ pub fn walk(
         let here = *path.last().expect("path starts non-empty");
         let options: Vec<(ArtistId, f64)> = neighbors(here)
             .into_iter()
-            .filter(|(a, sim)| *sim > 0.0 && !visited.contains(a) && profile.artist_plays(*a) == 0)
+            .filter(|(a, sim)| *sim > 0.0 && !visited.contains(a) && !profile.knows(*a))
             .collect();
         let &(next, _) = options.choose_weighted(rng, |(_, sim)| *sim).ok()?;
         visited.insert(next);

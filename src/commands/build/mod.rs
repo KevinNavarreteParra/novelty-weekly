@@ -350,7 +350,7 @@ fn far_candidates<K: Knowledge>(
         };
         let unheard: Vec<ArtistId> = chart
             .into_iter()
-            .filter(|a| profile.artist_plays(*a) == 0)
+            .filter(|a| !profile.knows(*a))
             .take(FAR_CHART_ARTISTS)
             .collect();
         let popular = gather.popular(&unheard)?;
@@ -443,7 +443,7 @@ impl Resolver<'_> {
             };
             let same = self.store.resolve_track(&found)?;
             if same != track {
-                if self.profile.track_plays(same) > 0 || self.recommended.contains(&same) {
+                if self.profile.heard(same) || self.recommended.contains(&same) {
                     return Ok(None);
                 }
                 self.store.merge_track_into(track, same)?;

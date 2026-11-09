@@ -35,7 +35,7 @@ pub fn score_artists(
     for &seed in seeds {
         let affinity = profile.affinity(seed);
         for &(other, sim) in similar.get(&seed).into_iter().flatten() {
-            if profile.artist_plays(other) == 0 {
+            if !profile.knows(other) {
                 links
                     .entry(other)
                     .or_default()

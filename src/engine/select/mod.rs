@@ -222,7 +222,7 @@ impl<'a> Picked<'a> {
         if self.tracks.contains(&c.track) {
             return false;
         }
-        let artist_limit = if self.profile.artist_plays(c.artist) > 0 {
+        let artist_limit = if self.profile.knows(c.artist) {
             self.params.per_known_artist
         } else {
             self.params.per_new_artist

@@ -50,10 +50,7 @@ pub fn candidates(
             continue;
         }
         let distinct: HashSet<TrackId> = catalog.iter().map(|t| t.track).collect();
-        let heard = distinct
-            .iter()
-            .filter(|t| profile.track_plays(**t) > 0)
-            .count();
+        let heard = distinct.iter().filter(|t| profile.heard(**t)).count();
         if distinct.is_empty() || heard as f64 / distinct.len() as f64 >= MAX_COVERAGE {
             continue;
         }
