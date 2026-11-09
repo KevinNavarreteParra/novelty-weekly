@@ -1,0 +1,10 @@
+/target
+
+# Local state: config, secrets, the database and its backups, history exports.
+/config.toml
+/secrets.toml
+.env
+*.db
+*.db-*
+*.zip
+/data/
