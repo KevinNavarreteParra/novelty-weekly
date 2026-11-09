@@ -1,4 +1,4 @@
-//! Spotify: the history export, and (to come) the Web API for recent listens,
-//! the catalog and the playlist.
+//! Spotify: the history export, PKCE login, and (to come) the Web API.
 
+pub mod auth;
 pub mod history;
