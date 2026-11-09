@@ -28,13 +28,20 @@ const VERSION_WORDS: &[&str] = &[
 /// Leading words of a bracketed credit: "Song (feat. X)", "Song [with Y]".
 const CREDIT_WORDS: &[&str] = &["feat", "ft", "featuring", "with"];
 
+/// Apostrophes join a word rather than split it: "Don't" keys as "dont",
+/// matching sources that drop the apostrophe.
+const APOSTROPHES: [char; 4] = ['\'', '\u{2019}', '\u{2018}', '`'];
+
 /// Lowercase, letters and digits only, single spaces; "&" reads as "and".
 ///
 /// `"The  Beatles!"` and `"the beatles"` both become `"the beatles"`. A name made
 /// only of punctuation (the band "!!!") keeps its punctuation, so it never
 /// collapses to an empty key.
 pub fn name_key(name: &str) -> String {
-    let lowered = name.to_lowercase().replace('&', " and ");
+    let lowered = name
+        .to_lowercase()
+        .replace(APOSTROPHES, "")
+        .replace('&', " and ");
     let key = words(&lowered).join(" ");
     if key.is_empty() {
         name.trim().to_lowercase()
@@ -119,6 +126,7 @@ mod tests {
         assert_eq!(name_key("AC/DC"), "ac dc");
         assert_eq!(name_key("Simon & Garfunkel"), "simon and garfunkel");
         assert_eq!(name_key("Sigur Rós"), "sigur rós");
+        assert_eq!(name_key("Don’t Stop"), name_key("Dont Stop"));
     }
 
     #[test]
@@ -144,10 +152,7 @@ mod tests {
     fn title_key_keeps_meaningful_parts() {
         // A remix is a different listen; parentheses that are part of the name stay.
         assert_eq!(title_key("Heroes (Moby Remix)"), "heroes moby remix");
-        assert_eq!(
-            title_key("(Don't Fear) The Reaper"),
-            "don t fear the reaper"
-        );
+        assert_eq!(title_key("(Don't Fear) The Reaper"), "dont fear the reaper");
         // "Live" inside the actual title is not a version marker.
         assert_eq!(title_key("Live Forever - Remastered"), "live forever");
         assert_eq!(title_key("Part One - Part Two"), "part one part two");
