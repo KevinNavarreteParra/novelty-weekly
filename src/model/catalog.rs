@@ -69,4 +69,33 @@ impl TrackRef {
     pub fn title_key(&self) -> String {
         title_key(&self.title)
     }
+
+    /// Whether `self`, found by searching a service, is the song `wanted`
+    /// asked for: the same artist, and titles at least [`SAME_TITLE`] alike
+    /// once version markers are stripped. Used to accept search results.
+    pub fn is_same_song_as(&self, wanted: &TrackRef) -> bool {
+        self.artist.key() == wanted.artist.key()
+            && strsim::normalized_levenshtein(&self.title_key(), &wanted.title_key()) >= SAME_TITLE
+    }
+}
+
+/// Title similarity (normalized Levenshtein, 0 to 1) above which two titles by
+/// the same artist name the same song (spec §7.5).
+pub const SAME_TITLE: f64 = 0.85;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn track(title: &str, artist: &str) -> TrackRef {
+        TrackRef::new(title, ArtistRef::named(artist))
+    }
+
+    #[test]
+    fn same_song_tolerates_versions_and_small_spelling_differences() {
+        let wanted = track("Dont Look Back in Anger", "Oasis");
+        assert!(track("Don't Look Back In Anger - Remastered", "Oasis").is_same_song_as(&wanted));
+        assert!(!track("Don't Look Back In Anger", "Some Cover Band").is_same_song_as(&wanted));
+        assert!(!track("Wonderwall", "Oasis").is_same_song_as(&wanted));
+    }
 }
