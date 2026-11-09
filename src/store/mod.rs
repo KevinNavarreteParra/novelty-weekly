@@ -6,6 +6,7 @@
 
 mod cold_start;
 mod identity;
+mod keys;
 mod knowledge;
 mod ledger;
 mod listens;
@@ -48,7 +49,11 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", true)?;
         conn.busy_timeout(Duration::from_secs(10))?;
         migrate(&conn).context("migrating the database schema")?;
-        Ok(Store { conn })
+        let store = Store { conn };
+        store
+            .ensure_current_keys()
+            .context("rebuilding name keys")?;
+        Ok(store)
     }
 }
 

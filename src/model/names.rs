@@ -3,7 +3,11 @@
 //!
 //! These keys are identity: the store matches artists on [`name_key`] and tracks
 //! on (artist, [`title_key`]). Changing a rule here changes what counts as "the
-//! same", so existing databases would need their keys rebuilt.
+//! same", so bump [`KEY_RULES`] with it: the store then rebuilds its keys.
+
+/// The version of the rules below. The store rebuilds every key when it was
+/// keyed under an older version.
+pub const KEY_RULES: u32 = 2;
 
 /// Words that mark a title segment as a version of the song rather than part of
 /// its name: "Song - Remastered 2011", "Song (Live)", "Song [Radio Edit]".
@@ -32,7 +36,8 @@ const CREDIT_WORDS: &[&str] = &["feat", "ft", "featuring", "with"];
 /// matching sources that drop the apostrophe.
 const APOSTROPHES: [char; 4] = ['\'', '\u{2019}', '\u{2018}', '`'];
 
-/// Lowercase, letters and digits only, single spaces; "&" reads as "and".
+/// Lowercase, letters and digits only, single spaces; "&" reads as "and" and
+/// "$" as "s", so "Travi$ Scott" is "Travis Scott".
 ///
 /// `"The  Beatles!"` and `"the beatles"` both become `"the beatles"`. A name made
 /// only of punctuation (the band "!!!") keeps its punctuation, so it never
@@ -41,7 +46,8 @@ pub fn name_key(name: &str) -> String {
     let lowered = name
         .to_lowercase()
         .replace(APOSTROPHES, "")
-        .replace('&', " and ");
+        .replace('&', " and ")
+        .replace('$', "s");
     let key = words(&lowered).join(" ");
     if key.is_empty() {
         name.trim().to_lowercase()
@@ -127,6 +133,13 @@ mod tests {
         assert_eq!(name_key("Simon & Garfunkel"), "simon and garfunkel");
         assert_eq!(name_key("Sigur Rós"), "sigur rós");
         assert_eq!(name_key("Don’t Stop"), name_key("Dont Stop"));
+    }
+
+    #[test]
+    fn a_dollar_sign_reads_as_s() {
+        assert_eq!(name_key("Travi$ Scott"), name_key("Travis Scott"));
+        assert_eq!(name_key("A$AP Rocky"), "asap rocky");
+        assert_eq!(name_key("Joey Bada$$"), "joey badass");
     }
 
     #[test]
