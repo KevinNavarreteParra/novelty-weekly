@@ -1,0 +1,26 @@
+# Copy to $NOVELTY_HOME/config.toml (default ~/.local/share/novelty/config.toml).
+# Every key is optional; these are the defaults. Secrets go in the environment,
+# not here (see .env.example).
+
+[spotify]
+redirect_uri = "http://127.0.0.1:8765/callback"
+playlist_name = "Novelty Weekly"
+
+[musicbrainz]
+enabled = false
+user_agent = "novelty-weekly/0.1.0 ( https://github.com/KevinNavarreteParra/novelty-weekly )"
+
+[build]
+k = 40
+pool_floor = 0.20
+pool_cap = 0.50
+mmr_lambda = 0.6
+decay_rho = 0.9
+affinity_tau_days = 365.0
+popularity_gamma = 0.5
+far_skip_top_ranks = 20
+timezone = "America/Los_Angeles"
+
+[blocklist]
+artists = []
+tags = ["christmas", "comedy", "spoken word"]
