@@ -128,6 +128,12 @@ pub struct Built {
 pub fn run(app: &App, args: &BuildArgs) -> Result<()> {
     let store = app.open_store()?;
     let params = BuildParams::new(&app.config, args)?;
+    // The timer fires weekly; a week published early (by hand) is done.
+    let week = Week::containing(Timestamp::now(), &params.timezone);
+    if !params.dry_run && store.ledger_weeks()?.contains(&week) {
+        println!("{week} is already published; nothing to do (preview with --dry-run)");
+        return Ok(());
+    }
     // Dry runs are previews, not runs worth alerting on.
     let run = if params.dry_run {
         None
