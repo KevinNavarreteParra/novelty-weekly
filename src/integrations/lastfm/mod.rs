@@ -14,7 +14,7 @@ use serde::de::DeserializeOwned;
 
 use super::Knowledge;
 use super::cache::{Cache, DAY};
-use super::http::Http;
+use super::http::{Http, Response};
 use crate::model::{
     ArtistRef, ArtistTag, ExternalIds, Namespace, PopularTrack, SimilarArtist, TrackRef,
 };
@@ -66,8 +66,8 @@ impl LastFm {
         Ok(Some(parsed))
     }
 
-    /// One live request. A rate-limit error is retried a few times; a
-    /// not-found error is returned as a body so it gets cached like any answer.
+    /// One live request, retried a few times when Last.fm is rate limiting or
+    /// answers with something that isn't JSON. What it returns gets cached.
     fn fetch(&self, method: &str, params: &[(&str, String)]) -> Result<String> {
         let mut query: Vec<(&str, &str)> = vec![
             ("method", method),
@@ -76,20 +76,20 @@ impl LastFm {
         ];
         query.extend(params.iter().map(|(k, v)| (*k, v.as_str())));
 
+        let mut last_reason = "";
         for attempt in 1..=3 {
             let response = self.http.get(API, &query, None)?;
-            match serde_json::from_str::<wire::ApiError>(&response.body) {
-                Ok(e) if e.error == ERROR_RATE_LIMITED && attempt < 3 => {
-                    warn!("last.fm rate limit; backing off");
+            match read_answer(&response) {
+                Answer::Keep => return Ok(response.body),
+                Answer::Retry(reason) => {
+                    warn!("last.fm {method}: {reason}; retrying");
+                    last_reason = reason;
                     std::thread::sleep(Duration::from_secs(5 * attempt));
                 }
-                Ok(e) if e.error == ERROR_NOT_FOUND => return Ok(response.body),
-                Ok(e) => bail!("last.fm {method}: error {}: {}", e.error, e.message),
-                Err(_) if response.is_success() => return Ok(response.body),
-                Err(_) => bail!("last.fm {method}: HTTP {}", response.status),
+                Answer::Fail(error) => bail!("last.fm {method}: {error}"),
             }
         }
-        bail!("last.fm {method}: still rate limited")
+        bail!("last.fm {method}: {last_reason}, three times")
     }
 }
 
@@ -194,6 +194,30 @@ fn artist_ref(name: String, mbid: Option<String>) -> ArtistRef {
     ArtistRef::named(name).with_ids(ids)
 }
 
+/// What to do with one answer from Last.fm.
+#[derive(Debug, PartialEq)]
+enum Answer {
+    /// Cache it: real data, or "not found", which is an answer too.
+    Keep,
+    /// Ask again shortly; never cache it.
+    Retry(&'static str),
+    Fail(String),
+}
+
+fn read_answer(response: &Response) -> Answer {
+    match serde_json::from_str::<wire::ApiError>(&response.body) {
+        Ok(e) if e.error == ERROR_RATE_LIMITED => Answer::Retry("rate limited"),
+        Ok(e) if e.error == ERROR_NOT_FOUND => Answer::Keep,
+        Ok(e) => Answer::Fail(format!("error {}: {}", e.error, e.message)),
+        Err(_) if !response.is_success() => Answer::Fail(format!("HTTP {}", response.status)),
+        // Last.fm sometimes answers 200 with an empty body.
+        Err(_) if serde_json::from_str::<serde::de::IgnoredAny>(&response.body).is_err() => {
+            Answer::Retry("an answer that isn't JSON")
+        }
+        Err(_) => Answer::Keep,
+    }
+}
+
 /// The method and its parameters, sorted; never the API key.
 fn cache_key(method: &str, params: &[(&str, String)]) -> String {
     let mut parts: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
@@ -235,6 +259,32 @@ mod tests {
         let listeners: Vec<Option<u64>> =
             parsed.toptracks.track.iter().map(|t| t.listeners).collect();
         assert_eq!(listeners, vec![Some(1_234_567), None, None]);
+    }
+
+    #[test]
+    fn only_json_answers_are_kept() {
+        let answer = |status, body: &str| {
+            read_answer(&Response {
+                status,
+                body: body.to_owned(),
+            })
+        };
+        assert_eq!(answer(200, r#"{"similarartists": {}}"#), Answer::Keep);
+        assert_eq!(
+            answer(200, r#"{"error": 6, "message": "no"}"#),
+            Answer::Keep
+        );
+        assert!(matches!(answer(200, ""), Answer::Retry(_)));
+        assert!(matches!(answer(200, "<html>"), Answer::Retry(_)));
+        assert!(matches!(
+            answer(200, r#"{"error": 29, "message": "slow down"}"#),
+            Answer::Retry(_)
+        ));
+        assert!(matches!(
+            answer(200, r#"{"error": 10, "message": "bad key"}"#),
+            Answer::Fail(_)
+        ));
+        assert!(matches!(answer(503, "down"), Answer::Fail(_)));
     }
 
     #[test]
