@@ -129,6 +129,7 @@ pub struct BuildConfig {
     /// Listens this many days old count 1/e as much toward affinity.
     pub affinity_tau_days: f64,
     /// How much an autoplayed listen counts toward affinity (spec §14 floats 0.5).
+    /// No effect yet: neither the export nor the poll marks a listen as autoplay.
     pub autoplay_weight: f64,
     /// How hard to discount popular artists in the near pool.
     pub popularity_gamma: f64,
