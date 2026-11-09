@@ -18,11 +18,17 @@ use std::ops::Range;
 use anyhow::Result;
 use jiff::Timestamp;
 
-use crate::model::{ArtistRef, ArtistTag, Listen, PopularTrack, SimilarArtist, TrackRef};
+use crate::model::{
+    ArtistRef, ArtistTag, Listen, Namespace, PopularTrack, SimilarArtist, TrackRef,
+};
 
 /// The service I listen on: where listens come from, where catalogs are
 /// browsed, and where the playlist goes. Spotify fills this role.
 pub trait ListeningService {
+    /// The kind of ID this service plays, e.g. [`Namespace::Spotify`]. A track
+    /// carrying one needs no search to be published.
+    fn namespace(&self) -> Namespace;
+
     /// Listens that started after `after`, oldest first. The newest may have
     /// `ms_played: None` until a later call (asked from just before it) can
     /// tell how long it played.

@@ -128,6 +128,8 @@ pub struct BuildConfig {
     pub decay_rho: f64,
     /// Listens this many days old count 1/e as much toward affinity.
     pub affinity_tau_days: f64,
+    /// How much an autoplayed listen counts toward affinity (spec §14 floats 0.5).
+    pub autoplay_weight: f64,
     /// How hard to discount popular artists in the near pool.
     pub popularity_gamma: f64,
     /// The far pool skips a tag's best-known artists, ranks 1 to this.
@@ -145,6 +147,7 @@ impl Default for BuildConfig {
             mmr_lambda: 0.6,
             decay_rho: 0.9,
             affinity_tau_days: 365.0,
+            autoplay_weight: 1.0,
             popularity_gamma: 0.5,
             far_skip_top_ranks: 20,
             timezone: "America/Los_Angeles".into(),

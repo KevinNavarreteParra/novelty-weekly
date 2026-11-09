@@ -2,8 +2,9 @@
 //! the engine together; none of them holds recommendation logic itself.
 
 mod auth;
+pub mod build;
 mod ingest;
-mod poll;
+pub mod poll;
 
 use std::path::PathBuf;
 
@@ -13,6 +14,7 @@ use crate::cli::{Cli, Command};
 use crate::config::{Config, Paths, secret};
 use crate::integrations::cache::Cache;
 use crate::integrations::http::USER_AGENT;
+use crate::integrations::lastfm::LastFm;
 use crate::integrations::spotify::Spotify;
 use crate::store::Store;
 
@@ -22,7 +24,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::IngestHistory { path } => ingest::history(&app, &path),
         Command::Auth { paste } => auth::run(&app, paste),
         Command::Poll => poll::run(&app),
-        Command::Build(_) => not_yet("build"),
+        Command::Build(args) => build::run(&app, &args),
         Command::Report(_) => not_yet("report"),
         Command::Ledger { .. } => not_yet("ledger"),
         Command::Block { .. } => not_yet("block"),
@@ -50,6 +52,15 @@ impl App {
     fn open_cache(&self) -> Result<Cache> {
         self.paths.ensure_home()?;
         Cache::open(&self.paths.cache())
+    }
+
+    /// The knowledge source. Needs `LASTFM_API_KEY`.
+    fn lastfm(&self) -> Result<LastFm> {
+        Ok(LastFm::new(
+            secret("LASTFM_API_KEY")?,
+            self.open_cache()?,
+            USER_AGENT,
+        ))
     }
 
     /// The listening service. Needs `SPOTIFY_CLIENT_ID` and a prior `novelty auth`.

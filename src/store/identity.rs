@@ -132,6 +132,44 @@ impl Store {
         Ok(())
     }
 
+    /// Records that `found`, a service's copy of a song, is `track`: its IDs
+    /// and details are added to `track`.
+    pub fn record_match(&self, track: TrackId, found: &TrackRef) -> Result<()> {
+        self.fill_track_details(track.0, found)?;
+        self.attach_ids(&TRACK_IDS, track.0, &found.ids)
+    }
+
+    /// Folds `duplicate` into `keep` when they turn out to be the same song
+    /// under two titles ("Pt. 1" and "Part 1"): every row pointing at
+    /// `duplicate` moves to `keep`, and `duplicate` is deleted. Where `keep`
+    /// already has an equivalent row (a play at the same moment), `keep`'s wins.
+    pub fn merge_track_into(&self, keep: TrackId, duplicate: TrackId) -> Result<()> {
+        if keep == duplicate {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        for table in [
+            "track_ids",
+            "plays",
+            "saved_tracks",
+            "popular_tracks",
+            "ledger",
+        ] {
+            self.conn.execute(
+                &format!("UPDATE OR IGNORE {table} SET track_id = ?1 WHERE track_id = ?2"),
+                params![keep.0, duplicate.0],
+            )?;
+            self.conn.execute(
+                &format!("DELETE FROM {table} WHERE track_id = ?1"),
+                [duplicate.0],
+            )?;
+        }
+        self.conn
+            .execute("DELETE FROM tracks WHERE track_id = ?1", [duplicate.0])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// An artist as integrations know it: its name and every external ID.
     pub fn artist_ref(&self, artist: ArtistId) -> Result<ArtistRef> {
         let name: String = self
@@ -318,6 +356,20 @@ mod tests {
                 .as_deref(),
             Some("sp1")
         );
+    }
+
+    #[test]
+    fn merging_moves_ids_to_the_kept_track() {
+        let s = store();
+        let keep = s.resolve_track(&track("Song Part 1", "Artist")).unwrap();
+        let mut other = track("Song Pt 1", "Artist");
+        other.ids.insert(Namespace::Spotify, "sp1");
+        let duplicate = s.resolve_track(&other).unwrap();
+        assert_ne!(keep, duplicate);
+
+        s.merge_track_into(keep, duplicate).unwrap();
+        assert_eq!(s.resolve_track(&other).unwrap(), keep);
+        assert!(s.track_ref(duplicate).is_err());
     }
 
     #[test]

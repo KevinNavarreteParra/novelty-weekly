@@ -17,6 +17,7 @@ pool_cap = 0.50
 mmr_lambda = 0.6
 decay_rho = 0.9
 affinity_tau_days = 365.0
+autoplay_weight = 1.0
 popularity_gamma = 0.5
 far_skip_top_ranks = 20
 timezone = "America/Los_Angeles"

@@ -181,6 +181,10 @@ impl Spotify {
 }
 
 impl ListeningService for Spotify {
+    fn namespace(&self) -> Namespace {
+        Namespace::Spotify
+    }
+
     fn recent_listens(&mut self, after: Option<Timestamp>) -> Result<Vec<Listen>> {
         let after_ms = after.map(|t| t.as_millisecond().to_string());
         let mut query = vec![("limit", "50")];
