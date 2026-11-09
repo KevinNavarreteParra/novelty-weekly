@@ -16,8 +16,40 @@ pub mod spotify;
 use std::ops::Range;
 
 use anyhow::Result;
+use jiff::Timestamp;
 
-use crate::model::{ArtistRef, ArtistTag, PopularTrack, SimilarArtist};
+use crate::model::{ArtistRef, ArtistTag, Listen, PopularTrack, SimilarArtist, TrackRef};
+
+/// The service I listen on: where listens come from, where catalogs are
+/// browsed, and where the playlist goes. Spotify fills this role.
+pub trait ListeningService {
+    /// Listens that started after `after`, oldest first. The newest may have
+    /// `ms_played: None` until a later call (asked from just before it) can
+    /// tell how long it played.
+    fn recent_listens(&mut self, after: Option<Timestamp>) -> Result<Vec<Listen>>;
+
+    /// Tracks saved to the library since `since`, with when each was saved.
+    fn saved_since(&mut self, since: Timestamp) -> Result<Vec<(TrackRef, Timestamp)>>;
+
+    /// Every track on the artist's albums and singles where they are the
+    /// primary artist. Empty if the service doesn't know them.
+    fn catalog(&mut self, artist: &ArtistRef) -> Result<Vec<TrackRef>>;
+
+    /// The service's own copy of `track`, carrying the service's ID, if it has
+    /// the song (see [`TrackRef::is_same_song_as`]).
+    fn find(&mut self, track: &TrackRef) -> Result<Option<TrackRef>>;
+
+    /// Replaces a playlist's contents and description, creating it first when
+    /// `playlist` is `None`. Returns the playlist's ID. Every track must carry
+    /// the service's ID, as [`find`](Self::find) returns them.
+    fn publish(
+        &mut self,
+        playlist: Option<&str>,
+        name: &str,
+        description: &str,
+        tracks: &[TrackRef],
+    ) -> Result<String>;
+}
 
 /// What the app needs to know about artists it may not have heard. Last.fm
 /// fills this role today; ListenBrainz or MusicBrainz could.
