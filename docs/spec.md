@@ -1,8 +1,34 @@
 # Novelty Weekly — a self-hosted Spotify discovery engine
 
-Status: draft spec, not started
+Status: draft spec; being built in Rust (see below)
 Owner: Kevin
 Last updated: 2026-11-09
+
+### Where the Rust build departs from this spec
+
+The sections below are the original Python-era design. The implementation changes these,
+on purpose:
+
+- **Stack (§12):** Rust, not Python. Sync throughout (`ureq`, `rusqlite`); no Polars.
+- **Data model (§6):** a canonical model (`src/model/`) that every integration
+  satisfies. Store IDs are surrogates. An artist is its normalized name plus any external
+  IDs. A track is (artist, normalized title), so versions of a song are one track and
+  "never played" means the song, not one URI. The schema is `src/store/schema.sql`.
+- **Derived, not stored (§6, §9):** outcomes, rewards and arm posteriors are recomputed
+  from the ledger and plays on every build. There are no `outcomes` or `arms` tables. The
+  Beta(2, 2) prior is not decayed, only evidence is (ρ^weeks).
+- **History vs poll dedupe (§6):** a history import replaces polled plays inside its
+  span, and polling never starts before the end of the history. Start times from the two
+  sources never match exactly, so a UNIQUE key can't dedupe them.
+- **Completion (§6):** skipping during the last 20% of a track of known length counts as
+  completing it.
+- **Tag cap (§7.4):** when the 25% dominant-tag cap would leave slots empty, a final
+  backfill pass lifts it. Artist caps never lift.
+- **Secrets (§11.2):** the Spotify client ID and Last.fm key come from the environment
+  (`prun`). The refresh token is a 0600 file in `$NOVELTY_HOME`. The playlist ID lives in
+  the database, not `config.toml`. API responses are cached in a separate, disposable
+  `cache.db`.
+- **One build per week:** a second non-dry-run build in the same ISO week is refused.
 
 ---
 
