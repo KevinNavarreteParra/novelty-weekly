@@ -3,5 +3,7 @@ Description=Novelty Weekly: build and publish this week's playlist
 
 [Service]
 Type=oneshot
+# See novelty-poll.service for why PATH is set.
 WorkingDirectory=%h/utilities/recmus
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
 ExecStart=%h/.local/bin/prun %h/.cargo/bin/novelty build
