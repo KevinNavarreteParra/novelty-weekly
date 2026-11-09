@@ -65,8 +65,10 @@ const FAR_CHART_DEPTH: usize = 60;
 const FAR_CHART_ARTISTS: usize = 15;
 const FAR_WALKS: usize = 20;
 const WALK_HOPS: usize = 3;
-/// Rounds of select-then-resolve before settling for a shorter playlist.
-const RESOLVE_ROUNDS: usize = 5;
+/// Rounds of select-then-resolve before settling for a shorter playlist. A
+/// round only searches its new picks, and replacements can fail one after
+/// another, so this is a backstop, not a budget.
+const RESOLVE_ROUNDS: usize = 20;
 
 pub struct BuildParams {
     pub dry_run: bool,
@@ -444,42 +446,62 @@ struct Resolver<'a> {
     recommended: &'a HashSet<TrackId>,
 }
 
+/// What resolving a pick to the listening service found.
+enum Resolution {
+    Playable(TrackRef),
+    /// The service has no match. Usually it doesn't carry the artist, or
+    /// knows them by another name, so their other tracks won't match either.
+    NoMatch,
+    /// The service's copy is too short or long, or turns out to be a song
+    /// already heard or recommended under another title.
+    Unplayable,
+}
+
 impl Resolver<'_> {
-    /// The service's playable copy of `track`, or `None` if it has none, or
-    /// its copy is too short or long, or turns out to be a song already heard
-    /// or recommended under another title.
-    fn resolve(
-        &self,
-        track: TrackId,
-        service: &mut impl ListeningService,
-    ) -> Result<Option<TrackRef>> {
+    fn resolve(&self, track: TrackId, service: &mut impl ListeningService) -> Result<Resolution> {
         let wanted = self.store.track_ref(track)?;
+        let reject = |resolution: Resolution, reason: String| {
+            info!(
+                "unplayable: {} – {}: {reason}",
+                wanted.artist.name, wanted.title
+            );
+            Ok(resolution)
+        };
         let found = if wanted.ids.get(service.namespace()).is_some() {
-            wanted
+            wanted.clone()
         } else {
             let Some(found) = service.find(&wanted)? else {
-                return Ok(None);
+                return reject(Resolution::NoMatch, "no match on the service".into());
             };
             let same = self.store.resolve_track(&found)?;
             if same != track {
                 if self.profile.heard(same) || self.recommended.contains(&same) {
-                    return Ok(None);
+                    return reject(
+                        Resolution::Unplayable,
+                        format!(
+                            "the match, \"{}\", is a song already heard or recommended",
+                            found.title
+                        ),
+                    );
                 }
                 self.store.merge_track_into(track, same)?;
             }
             self.store.record_match(track, &found)?;
             found
         };
-        let playable_length = found
-            .duration_ms
-            .is_none_or(|ms| (MIN_DURATION_MS..=MAX_DURATION_MS).contains(&ms));
-        Ok(playable_length.then_some(found))
+        match found.duration_ms {
+            Some(ms) if !(MIN_DURATION_MS..=MAX_DURATION_MS).contains(&ms) => {
+                reject(Resolution::Unplayable, format!("{} s long", ms / 1000))
+            }
+            _ => Ok(Resolution::Playable(found)),
+        }
     }
 }
 
 /// Selects, resolves the picks, and re-selects without the unplayable ones
-/// until every pick plays. The selector reuses `seed` each round, so a round
-/// changes only what the last round couldn't resolve.
+/// until every pick plays. A pick with no match on the service takes its
+/// artist's other candidates out too. The selector reuses `seed` each round,
+/// so a round changes only what the last round couldn't resolve.
 #[allow(clippy::too_many_arguments)]
 fn select_playable(
     candidates: Vec<Candidate>,
@@ -493,10 +515,11 @@ fn select_playable(
 ) -> Result<(select::Selection, HashMap<TrackId, TrackRef>)> {
     let mut playable: HashMap<TrackId, TrackRef> = HashMap::new();
     let mut unplayable: HashSet<TrackId> = HashSet::new();
+    let mut unmatched_artists: HashSet<ArtistId> = HashSet::new();
     for round in 1..=RESOLVE_ROUNDS {
         let remaining: Vec<Candidate> = candidates
             .iter()
-            .filter(|c| !unplayable.contains(&c.track))
+            .filter(|c| !unplayable.contains(&c.track) && !unmatched_artists.contains(&c.artist))
             .cloned()
             .collect();
         let selection = select::select(
@@ -513,10 +536,15 @@ fn select_playable(
                 continue;
             }
             match resolver.resolve(pick.track, service)? {
-                Some(track) => {
+                Resolution::Playable(track) => {
                     playable.insert(pick.track, track);
                 }
-                None => {
+                Resolution::NoMatch => {
+                    unplayable.insert(pick.track);
+                    unmatched_artists.insert(pick.artist);
+                    all_played = false;
+                }
+                Resolution::Unplayable => {
                     unplayable.insert(pick.track);
                     all_played = false;
                 }

@@ -487,3 +487,70 @@ fn an_imported_history_retires_the_cold_start() {
         "deep cuts are back once a history is imported"
     );
 }
+
+#[test]
+fn an_artist_the_service_lacks_is_searched_once() {
+    /// Lacks every third "Near" artist; counts searches per artist.
+    struct HalfTheArtists(
+        FakeService,
+        RefCell<std::collections::HashMap<String, usize>>,
+    );
+    impl ListeningService for HalfTheArtists {
+        fn namespace(&self) -> Namespace {
+            self.0.namespace()
+        }
+        fn recent_listens(&mut self, after: Option<Timestamp>) -> Result<Vec<Listen>> {
+            self.0.recent_listens(after)
+        }
+        fn saved_since(&mut self, since: Timestamp) -> Result<Vec<(TrackRef, Timestamp)>> {
+            self.0.saved_since(since)
+        }
+        fn catalog(&mut self, artist: &ArtistRef) -> Result<Vec<TrackRef>> {
+            self.0.catalog(artist)
+        }
+        fn find(&mut self, t: &TrackRef) -> Result<Option<TrackRef>> {
+            *self
+                .1
+                .borrow_mut()
+                .entry(t.artist.name.clone())
+                .or_default() += 1;
+            let lacking = t
+                .artist
+                .name
+                .strip_prefix("Near ")
+                .and_then(|n| n.parse::<usize>().ok())
+                .is_some_and(|n| n % 3 == 0);
+            if lacking { Ok(None) } else { self.0.find(t) }
+        }
+        fn publish(&mut self, p: Option<&str>, n: &str, d: &str, t: &[TrackRef]) -> Result<String> {
+            self.0.publish(p, n, d, t)
+        }
+    }
+    let store = store_with_history();
+    let mut service = HalfTheArtists(FakeService::default(), RefCell::default());
+    let built = build(
+        &store,
+        &FakeKnowledge,
+        &mut service,
+        &params(true),
+        now(),
+        &mut StdRng::seed_from_u64(11),
+    )
+    .unwrap();
+    assert_eq!(
+        built.picks.len(),
+        K,
+        "replacements keep coming until all play"
+    );
+    let searches = service.1.borrow();
+    let lacking: Vec<(&String, &usize)> = searches
+        .iter()
+        .filter(|(name, _)| {
+            name.strip_prefix("Near ")
+                .and_then(|n| n.parse::<usize>().ok())
+                .is_some_and(|n| n % 3 == 0)
+        })
+        .collect();
+    assert!(!lacking.is_empty(), "the test should hit a missing artist");
+    assert!(lacking.iter().all(|(_, n)| **n == 1), "{lacking:?}");
+}
