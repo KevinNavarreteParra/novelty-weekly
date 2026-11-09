@@ -12,6 +12,9 @@
 //! its own [`ArtistId`]s and [`TrackId`]s; a [`Play`] is a resolved [`Listen`].
 //! The engine only ever sees resolved records.
 //!
+//! A [`ColdStart`] is the stand-in for a listening history until one is
+//! imported: the service's rankings of what I play most, and my saved tracks.
+//!
 //! The model also names what the app decides: a [`Recommendation`] from a
 //! [`Pool`], credited to an [`Arm`], in one [`Week`]'s playlist.
 //!
@@ -19,6 +22,7 @@
 //! written on each type. Nothing downstream changes.
 
 mod catalog;
+mod cold_start;
 mod ids;
 mod knowledge;
 mod listen;
@@ -26,6 +30,7 @@ pub mod names;
 mod recommendation;
 
 pub use catalog::{ArtistRef, TrackRef};
+pub use cold_start::{ColdStart, Span};
 pub use ids::{ArtistId, ExternalIds, Namespace, TrackId};
 pub use knowledge::{
     ArtistTag, ArtistTags, PopularTrack, PopularTracks, SimilarArtist, SimilarityGraph,

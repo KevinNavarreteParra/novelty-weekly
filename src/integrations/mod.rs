@@ -19,7 +19,7 @@ use anyhow::Result;
 use jiff::Timestamp;
 
 use crate::model::{
-    ArtistRef, ArtistTag, Listen, Namespace, PopularTrack, SimilarArtist, TrackRef,
+    ArtistRef, ArtistTag, Listen, Namespace, PopularTrack, SimilarArtist, Span, TrackRef,
 };
 
 /// The service I listen on: where listens come from, where catalogs are
@@ -36,6 +36,18 @@ pub trait ListeningService {
 
     /// Tracks saved to the library since `since`, with when each was saved.
     fn saved_since(&mut self, since: Timestamp) -> Result<Vec<(TrackRef, Timestamp)>>;
+
+    /// The artists I played most over `span`, top first. Only the cold start
+    /// asks; a service that keeps no such ranking leaves this as is.
+    fn top_artists(&mut self, _span: Span) -> Result<Vec<ArtistRef>> {
+        Ok(Vec::new())
+    }
+
+    /// The tracks I played most over `span`, top first. See
+    /// [`top_artists`](Self::top_artists).
+    fn top_tracks(&mut self, _span: Span) -> Result<Vec<TrackRef>> {
+        Ok(Vec::new())
+    }
 
     /// Every track on the artist's albums and singles where they are the
     /// primary artist. Empty if the service doesn't know them.

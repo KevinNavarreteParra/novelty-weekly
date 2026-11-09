@@ -38,6 +38,16 @@ pub struct Artist {
     pub name: String,
 }
 
+impl Artist {
+    pub fn into_ref(self) -> ArtistRef {
+        let mut ids = ExternalIds::new();
+        if let Some(id) = self.id {
+            ids.insert(Namespace::Spotify, id);
+        }
+        ArtistRef::named(self.name).with_ids(ids)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Album {
     pub id: Option<String>,
@@ -80,14 +90,7 @@ impl Track {
     pub fn into_ref(self, album_name: Option<&str>) -> Option<TrackRef> {
         let id = self.id?;
         let primary = self.artists.into_iter().next()?;
-        let mut artist_ids = ExternalIds::new();
-        if let Some(artist_id) = primary.id {
-            artist_ids.insert(Namespace::Spotify, artist_id);
-        }
-        let mut track = TrackRef::new(
-            self.name,
-            ArtistRef::named(primary.name).with_ids(artist_ids),
-        );
+        let mut track = TrackRef::new(self.name, primary.into_ref());
         track.album = self.album.map(|a| a.name).or(album_name.map(str::to_owned));
         track.duration_ms = Some(self.duration_ms);
         track.ids.insert(Namespace::Spotify, id);

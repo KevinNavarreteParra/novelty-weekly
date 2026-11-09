@@ -21,7 +21,7 @@ use self::auth::Token;
 use super::ListeningService;
 use super::cache::{Cache, DAY};
 use super::http::{Http, Response};
-use crate::model::{ArtistRef, Listen, Namespace, TrackRef};
+use crate::model::{ArtistRef, Listen, Namespace, Span, TrackRef};
 
 const API: &str = "https://api.spotify.com/v1";
 /// Spotify doesn't publish its limit; this stays well under it.
@@ -30,6 +30,8 @@ const REQUESTS_PER_SECOND: f64 = 4.0;
 const SEARCH_LIMIT: &str = "10";
 /// Playlist writes take at most 100 URIs per request.
 const URIS_PER_WRITE: usize = 100;
+/// `GET /me/top/{type}` returns at most 50 items a page; the cold start reads one.
+const TOP_LIMIT: &str = "50";
 
 pub struct Spotify {
     http: Http,
@@ -231,6 +233,28 @@ impl ListeningService for Spotify {
         }
     }
 
+    fn top_artists(&mut self, span: Span) -> Result<Vec<ArtistRef>> {
+        let page: wire::Page<wire::Artist> = self.get(
+            "/me/top/artists",
+            &[("time_range", time_range(span)), ("limit", TOP_LIMIT)],
+            None,
+        )?;
+        Ok(page.items.into_iter().map(wire::Artist::into_ref).collect())
+    }
+
+    fn top_tracks(&mut self, span: Span) -> Result<Vec<TrackRef>> {
+        let page: wire::Page<wire::Track> = self.get(
+            "/me/top/tracks",
+            &[("time_range", time_range(span)), ("limit", TOP_LIMIT)],
+            None,
+        )?;
+        Ok(page
+            .items
+            .into_iter()
+            .filter_map(|t| t.into_ref(None))
+            .collect())
+    }
+
     fn catalog(&mut self, artist: &ArtistRef) -> Result<Vec<TrackRef>> {
         let Some(artist_id) = self.artist_id(artist)? else {
             info!("spotify has no artist named {:?}", artist.name);
@@ -338,6 +362,15 @@ impl ListeningService for Spotify {
 
 /// Whether "live" is one of the version markers on the title, rather than a
 /// word of the title itself ("Live Forever").
+/// Spotify's name for a span in `GET /me/top/{type}`.
+fn time_range(span: Span) -> &'static str {
+    match span {
+        Span::Month => "short_term",
+        Span::HalfYear => "medium_term",
+        Span::Year => "long_term",
+    }
+}
+
 fn is_live(title: &str) -> bool {
     use crate::model::names::{name_key, title_key};
     let lives = |key: String| key.split(' ').filter(|w| *w == "live").count();
@@ -361,6 +394,24 @@ mod tests {
         assert!(!is_live("Live Forever"));
         assert!(!is_live("Live Forever - Remastered"));
         assert!(!is_live("Heroes"));
+    }
+
+    #[test]
+    fn a_top_artists_page_maps_to_artists_with_their_ids() {
+        let page: wire::Page<wire::Artist> = serde_json::from_str(
+            r#"{"href": "h", "limit": 50, "offset": 0, "total": 1, "next": null,
+                "previous": null,
+                "items": [{"id": "0oSGxfWSnnOXhD2fKuz2Gy", "name": "David Bowie",
+                           "type": "artist", "uri": "spotify:artist:0oSGxfWSnnOXhD2fKuz2Gy",
+                           "genres": [], "images": []}]}"#,
+        )
+        .unwrap();
+        let bowie = page.items.into_iter().next().unwrap().into_ref();
+        assert_eq!(bowie.name, "David Bowie");
+        assert_eq!(
+            bowie.ids.get(Namespace::Spotify),
+            Some("0oSGxfWSnnOXhD2fKuz2Gy")
+        );
     }
 
     #[test]

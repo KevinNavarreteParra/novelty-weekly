@@ -72,9 +72,6 @@ stored_enum! {
         /// A recently-played feed where the gap was unusable (a pause, a
         /// device switch) and `ms_played` is capped at the track's length.
         PollEstimated => "poll_est",
-        /// Not a real listen: a stand-in from top or saved tracks, used for a
-        /// cold start before any history exists.
-        TopSeed => "top_seed",
     }
 }
 
