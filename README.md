@@ -54,6 +54,7 @@ and run commands through `prun`. State lives in `$NOVELTY_HOME`
 cargo install --path .
 prun novelty auth                         # once; --paste if the browser is elsewhere
 novelty ingest-history my_spotify_data.zip
+prun novelty cold-start                   # instead, until the export arrives
 prun novelty poll                         # then every 30 min via deploy/
 prun novelty build --dry-run              # preview the playlist and why
 novelty ledger show

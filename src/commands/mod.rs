@@ -3,6 +3,7 @@
 
 mod auth;
 pub mod build;
+pub mod cold_start;
 mod ingest;
 mod ledger;
 pub mod poll;
@@ -24,6 +25,7 @@ pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::IngestHistory { path } => ingest::history(&app, &path),
         Command::Auth { paste } => auth::run(&app, paste),
+        Command::ColdStart => cold_start::run(&app),
         Command::Poll => poll::run(&app),
         Command::Build(args) => build::run(&app, &args),
         Command::Report(_) => not_yet("report"),

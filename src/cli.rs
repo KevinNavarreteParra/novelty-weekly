@@ -34,6 +34,12 @@ pub enum Command {
         /// The export's .zip, or a directory of its JSON files.
         path: PathBuf,
     },
+    /// Seed my taste from Spotify's top items and library, until the export arrives.
+    ///
+    /// Fetches Spotify's rankings of my top artists and tracks over the last
+    /// month, six months and year, and every saved track. Builds use them
+    /// until a history export is imported. Safe to re-run.
+    ColdStart,
     /// Record recently played tracks and score recommendation outcomes.
     Poll,
     /// Build this week's playlist.

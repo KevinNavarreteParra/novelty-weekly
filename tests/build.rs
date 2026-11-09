@@ -12,13 +12,14 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 
 use novelty::commands::build::{BuildParams, build};
+use novelty::commands::cold_start::cold_start;
 use novelty::engine::profile::ProfileParams;
 use novelty::engine::select::SelectParams;
 use novelty::engine::select::allocate::ShareBounds;
 use novelty::integrations::{Knowledge, ListeningService};
 use novelty::model::{
-    ArtistRef, ArtistTag, Ending, Listen, Namespace, PopularTrack, Provenance, SimilarArtist,
-    StartedBy, TrackRef,
+    ArtistRef, ArtistTag, Ending, Listen, Namespace, Pool, PopularTrack, Provenance, SimilarArtist,
+    Span, StartedBy, TrackRef,
 };
 use novelty::store::Store;
 
@@ -364,4 +365,125 @@ fn an_unknown_artist_from_the_service_is_skipped_not_fatal() {
     // No deep candidates at all; near and far backfill the playlist.
     assert_eq!(built.picks.len(), K);
     assert!(built.shortfall.contains_key(&novelty::model::Pool::Deep));
+}
+
+/// A Spotify account with no history export yet: "Liked 0" and "Liked 1"
+/// top the rankings, and "Liked 2"'s first four tracks are saved.
+struct NewAccount(FakeService);
+
+impl ListeningService for NewAccount {
+    fn namespace(&self) -> Namespace {
+        self.0.namespace()
+    }
+    fn recent_listens(&mut self, after: Option<Timestamp>) -> Result<Vec<Listen>> {
+        self.0.recent_listens(after)
+    }
+    fn saved_since(&mut self, _since: Timestamp) -> Result<Vec<(TrackRef, Timestamp)>> {
+        Ok((0..4)
+            .map(|t| {
+                (
+                    liked_track(2, t),
+                    now() - SignedDuration::from_hours(24 * 30),
+                )
+            })
+            .collect())
+    }
+    fn top_artists(&mut self, _span: Span) -> Result<Vec<ArtistRef>> {
+        Ok(vec![
+            ArtistRef::named("Liked 0"),
+            ArtistRef::named("Liked 1"),
+        ])
+    }
+    fn top_tracks(&mut self, _span: Span) -> Result<Vec<TrackRef>> {
+        Ok((0..4).map(|t| liked_track(0, t)).collect())
+    }
+    fn catalog(&mut self, artist: &ArtistRef) -> Result<Vec<TrackRef>> {
+        self.0.catalog(artist)
+    }
+    fn find(&mut self, t: &TrackRef) -> Result<Option<TrackRef>> {
+        self.0.find(t)
+    }
+    fn publish(&mut self, p: Option<&str>, n: &str, d: &str, t: &[TrackRef]) -> Result<String> {
+        self.0.publish(p, n, d, t)
+    }
+}
+
+fn liked_track(artist: usize, track: usize) -> TrackRef {
+    TrackRef::new(
+        format!("Liked {artist} track {track}"),
+        ArtistRef::named(format!("Liked {artist}")),
+    )
+}
+
+#[test]
+fn a_cold_start_builds_from_rankings_and_saves_without_deep_cuts() {
+    let store = Store::open_in_memory().unwrap();
+    let mut service = NewAccount(FakeService::default());
+    assert!(
+        build(
+            &store,
+            &FakeKnowledge,
+            &mut service,
+            &params(true),
+            now(),
+            &mut StdRng::seed_from_u64(5),
+        )
+        .is_err(),
+        "nothing to build from before the cold start"
+    );
+
+    let fetched = cold_start(&store, &mut service).unwrap();
+    assert_eq!(fetched.top_artists, [2, 2, 2]);
+    assert_eq!(fetched.saved, 4);
+
+    let built = build(
+        &store,
+        &FakeKnowledge,
+        &mut service,
+        &params(true),
+        now(),
+        &mut StdRng::seed_from_u64(5),
+    )
+    .unwrap();
+    assert_eq!(built.picks.len(), K);
+    for (pick, track, _) in &built.picks {
+        assert_ne!(pick.pool, Pool::Deep);
+        assert!(
+            !track.artist.name.starts_with("Liked"),
+            "recommended a known artist: {}",
+            track.artist.name
+        );
+    }
+    // Near picks can only come from the cold start's artists: there are no plays.
+    let near: Vec<&String> = built
+        .picks
+        .iter()
+        .filter(|(c, _, _)| c.pool == Pool::Near)
+        .map(|(_, _, why)| why)
+        .collect();
+    assert!(!near.is_empty());
+    assert!(
+        near.iter().all(|why| why.contains("similar to Liked")),
+        "{near:?}"
+    );
+}
+
+#[test]
+fn an_imported_history_retires_the_cold_start() {
+    let store = store_with_history();
+    let mut service = NewAccount(FakeService::default());
+    cold_start(&store, &mut service).unwrap();
+    let built = build(
+        &store,
+        &FakeKnowledge,
+        &mut service,
+        &params(true),
+        now(),
+        &mut StdRng::seed_from_u64(9),
+    )
+    .unwrap();
+    assert!(
+        built.picks.iter().any(|(c, _, _)| c.pool == Pool::Deep),
+        "deep cuts are back once a history is imported"
+    );
 }

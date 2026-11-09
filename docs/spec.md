@@ -29,6 +29,11 @@ on purpose:
   the database, not `config.toml`. API responses are cached in a separate, disposable
   `cache.db`.
 - **One build per week:** a second non-dry-run build in the same ISO week is refused.
+- **Cold start (§5.3):** `novelty cold-start` stores Spotify's top-artist and top-track
+  rankings (about a month, six months and a year) and the whole saved library as they
+  are, not as synthetic plays. Builds weight them only until a history export is
+  imported, and skip the deep pool until then, since which of a liked artist's tracks I've
+  heard is unknown. The weights are in `engine/profile.rs`.
 
 ---
 
