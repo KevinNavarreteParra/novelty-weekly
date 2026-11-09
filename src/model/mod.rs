@@ -12,6 +12,9 @@
 //! its own [`ArtistId`]s and [`TrackId`]s; a [`Play`] is a resolved [`Listen`].
 //! The engine only ever sees resolved records.
 //!
+//! The model also names what the app decides: a [`Recommendation`] from a
+//! [`Pool`], credited to an [`Arm`], in one [`Week`]'s playlist.
+//!
 //! Adding an integration means producing observations that follow the rules
 //! written on each type. Nothing downstream changes.
 
@@ -20,11 +23,13 @@ mod ids;
 mod knowledge;
 mod listen;
 pub mod names;
+mod recommendation;
 
 pub use catalog::{ArtistRef, TrackRef};
 pub use ids::{ArtistId, ExternalIds, Namespace, TrackId};
 pub use knowledge::{ArtistTag, PopularTrack, SimilarArtist};
 pub use listen::{Ending, Listen, Play, Provenance, StartedBy, Verdict, judge};
+pub use recommendation::{Arm, Pool, Recommendation, Week};
 
 /// Declares a fieldless enum whose variants are stored as fixed strings, with
 /// `as_str`, `parse` and `Display`. Keeps each variant's stored name next to it.
