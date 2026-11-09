@@ -65,6 +65,23 @@ CREATE TABLE saved_tracks (
     saved_at INTEGER NOT NULL
 );
 
+-- The cold start (model::ColdStart): the listening service's rankings of what
+-- I played most over each span (model::Span), as last fetched. A ranking is
+-- replaced whole each time it is fetched.
+CREATE TABLE top_artists (
+    span      TEXT NOT NULL,
+    rank      INTEGER NOT NULL,       -- 0 is the top
+    artist_id INTEGER NOT NULL REFERENCES artists (artist_id),
+    PRIMARY KEY (span, rank)
+);
+
+CREATE TABLE top_tracks (
+    span     TEXT NOT NULL,
+    rank     INTEGER NOT NULL,
+    track_id INTEGER NOT NULL REFERENCES tracks (track_id),
+    PRIMARY KEY (span, rank)
+);
+
 -- Knowledge, per source ('lastfm', ...). Rewritten whole for an artist each
 -- time that artist is fetched.
 CREATE TABLE similar_artists (

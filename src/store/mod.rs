@@ -4,6 +4,7 @@
 //! [`Store`] methods are split by what they touch, one file each, so
 //! `store/listens.rs` is everything the store does with listens.
 
+mod cold_start;
 mod identity;
 mod knowledge;
 mod ledger;

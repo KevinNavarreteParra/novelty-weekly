@@ -152,6 +152,7 @@ impl Store {
             "track_ids",
             "plays",
             "saved_tracks",
+            "top_tracks",
             "popular_tracks",
             "ledger",
         ] {
@@ -366,10 +367,14 @@ mod tests {
         other.ids.insert(Namespace::Spotify, "sp1");
         let duplicate = s.resolve_track(&other).unwrap();
         assert_ne!(keep, duplicate);
+        s.record_top_tracks(crate::model::Span::Month, std::slice::from_ref(&other))
+            .unwrap();
 
         s.merge_track_into(keep, duplicate).unwrap();
         assert_eq!(s.resolve_track(&other).unwrap(), keep);
         assert!(s.track_ref(duplicate).is_err());
+        let ranked = &s.cold_start().unwrap().top_tracks[&crate::model::Span::Month];
+        assert_eq!(ranked[0].0, keep, "a ranking follows the merge");
     }
 
     #[test]
