@@ -2,6 +2,7 @@
 //! tags, top tracks, listener counts and tag charts. Read-only methods that
 //! need only an API key.
 
+mod tags;
 mod wire;
 
 use std::ops::Range;
@@ -26,28 +27,6 @@ const CHART_PAGE: usize = 50;
 /// Last.fm error codes the adapter treats specially.
 const ERROR_NOT_FOUND: u32 = 6;
 const ERROR_RATE_LIMITED: u32 = 29;
-
-/// Folksonomy tags that describe the listener, not the music.
-const NOISE_TAGS: &[&str] = &[
-    "seen live",
-    "favorites",
-    "favourites",
-    "favorite",
-    "favourite",
-    "my favorite",
-    "awesome",
-    "love",
-    "beautiful",
-    "amazing",
-    "albums i own",
-    "spotify",
-    "under 2000 listeners",
-    "all",
-    "check out",
-    "good",
-    "cool",
-    "best",
-];
 
 pub struct LastFm {
     http: Http,
@@ -141,7 +120,7 @@ impl Knowledge for LastFm {
             .unwrap_or_default()
             .into_iter()
             .map(|t| ArtistTag::new(&t.name, t.count / 100.0))
-            .filter(|t| t.weight > 0.0 && !is_noise(&t.tag, &artist_key))
+            .filter(|t| t.weight > 0.0 && tags::describes_music(&t.tag, &artist_key))
             .collect())
     }
 
@@ -215,10 +194,6 @@ fn artist_ref(name: String, mbid: Option<String>) -> ArtistRef {
     ArtistRef::named(name).with_ids(ids)
 }
 
-fn is_noise(tag: &str, artist_key: &str) -> bool {
-    NOISE_TAGS.contains(&tag) || crate::model::names::name_key(tag) == artist_key
-}
-
 /// The method and its parameters, sorted; never the API key.
 fn cache_key(method: &str, params: &[(&str, String)]) -> String {
     let mut parts: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
@@ -260,13 +235,6 @@ mod tests {
         let listeners: Vec<Option<u64>> =
             parsed.toptracks.track.iter().map(|t| t.listeners).collect();
         assert_eq!(listeners, vec![Some(1_234_567), None, None]);
-    }
-
-    #[test]
-    fn noise_tags_and_the_artists_own_name_are_dropped() {
-        assert!(is_noise("seen live", "mazzy star"));
-        assert!(is_noise("mazzy star", "mazzy star"));
-        assert!(!is_noise("dream pop", "mazzy star"));
     }
 
     #[test]

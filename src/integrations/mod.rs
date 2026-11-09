@@ -81,7 +81,8 @@ pub trait Knowledge {
     fn similar_artists(&self, artist: &ArtistRef) -> Result<Vec<SimilarArtist>>;
 
     /// Tags that describe the artist's music. Not tags that describe the
-    /// listener ("seen live", "favorites"): filter those out.
+    /// listener ("seen live", "favorites") or where the artist is from
+    /// ("usa", "colombian"): filter those out.
     fn artist_tags(&self, artist: &ArtistRef) -> Result<Vec<ArtistTag>>;
 
     /// The artist's most played tracks, most played first.
