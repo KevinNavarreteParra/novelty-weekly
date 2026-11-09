@@ -8,6 +8,11 @@
 //!
 //! Whichever matched, the IDs the observation carries are added to the record,
 //! so the next observation from any source matches on them.
+//!
+//! The other direction, from store IDs back to refs an integration can look
+//! up, is here too.
+
+use std::collections::HashMap;
 
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
@@ -127,6 +132,86 @@ impl Store {
         Ok(())
     }
 
+    /// An artist as integrations know it: its name and every external ID.
+    pub fn artist_ref(&self, artist: ArtistId) -> Result<ArtistRef> {
+        let name: String = self
+            .conn
+            .prepare_cached("SELECT name FROM artists WHERE artist_id = ?1")?
+            .query_row([artist.0], |row| row.get(0))?;
+        let ids = self.external_ids(&ARTIST_IDS, artist.0)?;
+        Ok(ArtistRef::named(name).with_ids(ids))
+    }
+
+    /// A track as integrations know it, artist included.
+    pub fn track_ref(&self, track: TrackId) -> Result<TrackRef> {
+        let (title, artist, album, duration_ms): (String, i64, Option<String>, Option<u32>) = self
+            .conn
+            .prepare_cached(
+                "SELECT title, artist_id, album, duration_ms FROM tracks WHERE track_id = ?1",
+            )?
+            .query_row([track.0], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?;
+        Ok(TrackRef {
+            title,
+            artist: self.artist_ref(ArtistId(artist))?,
+            album,
+            duration_ms,
+            ids: self.external_ids(&TRACK_IDS, track.0)?,
+        })
+    }
+
+    /// Display names, for rationales and reports.
+    pub fn artist_names(
+        &self,
+        artists: impl IntoIterator<Item = ArtistId>,
+    ) -> Result<HashMap<ArtistId, String>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT name FROM artists WHERE artist_id = ?1")?;
+        let mut names = HashMap::new();
+        for artist in artists {
+            names.insert(artist, stmt.query_row([artist.0], |row| row.get(0))?);
+        }
+        Ok(names)
+    }
+
+    /// Known lengths of `tracks`.
+    pub fn durations(
+        &self,
+        tracks: impl IntoIterator<Item = TrackId>,
+    ) -> Result<HashMap<TrackId, u32>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT duration_ms FROM tracks WHERE track_id = ?1 AND duration_ms IS NOT NULL",
+        )?;
+        let mut out = HashMap::new();
+        for track in tracks {
+            if let Some(ms) = stmt.query_row([track.0], |row| row.get(0)).optional()? {
+                out.insert(track, ms);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Every external ID on file for one artist or track. Where a namespace
+    /// has several (a song's single and album releases), the newest wins.
+    fn external_ids(&self, ids_in: &IdTable, id: i64) -> Result<ExternalIds> {
+        let sql = format!(
+            "SELECT namespace, value FROM {} WHERE {} = ?1 ORDER BY rowid",
+            ids_in.table, ids_in.column
+        );
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+        let mut rows = stmt.query([id])?;
+        let mut ids = ExternalIds::new();
+        while let Some(row) = rows.next()? {
+            let namespace: String = row.get(0)?;
+            if let Some(ns) = Namespace::parse(&namespace) {
+                ids.insert(ns, row.get::<_, String>(1)?);
+            }
+        }
+        Ok(ids)
+    }
+
     /// One external ID for a track, e.g. the Spotify ID to put in a playlist.
     pub fn track_external_id(
         &self,
@@ -233,5 +318,16 @@ mod tests {
                 .as_deref(),
             Some("sp1")
         );
+    }
+
+    #[test]
+    fn a_track_ref_comes_back_with_its_artist_and_ids() {
+        let s = store();
+        let mut original = track("Song", "Artist");
+        original.duration_ms = Some(1_000);
+        original.ids.insert(Namespace::Spotify, "sp1");
+        original.artist.ids.insert(Namespace::Spotify, "ar1");
+        let id = s.resolve_track(&original).unwrap();
+        assert_eq!(s.track_ref(id).unwrap(), original);
     }
 }

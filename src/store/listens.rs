@@ -56,6 +56,19 @@ impl Store {
         })
     }
 
+    /// When the newest polled listen started: where the next poll picks up.
+    pub fn latest_polled_start(&self) -> Result<Option<Timestamp>> {
+        let ms: Option<i64> = self.conn.query_row(
+            "SELECT MAX(started_at) FROM plays WHERE provenance IN (?1, ?2)",
+            params![
+                Provenance::Poll.as_str(),
+                Provenance::PollEstimated.as_str()
+            ],
+            |row| row.get(0),
+        )?;
+        ms.map(from_ms).transpose().map_err(Into::into)
+    }
+
     /// Every play on file, oldest first.
     pub fn plays(&self) -> Result<Vec<Play>> {
         let mut stmt = self.conn.prepare(

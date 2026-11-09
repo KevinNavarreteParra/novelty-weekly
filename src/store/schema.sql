@@ -109,6 +109,12 @@ CREATE TABLE ledger (
 );
 CREATE INDEX ledger_by_week ON ledger (week);
 
+-- Small facts the app keeps about itself, e.g. the playlist's ID.
+CREATE TABLE settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 -- One row per poll or build, for alerting on repeated failures.
 CREATE TABLE runs (
     run_id      INTEGER PRIMARY KEY,
