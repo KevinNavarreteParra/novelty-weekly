@@ -49,16 +49,24 @@ impl Cache {
         ttl: Duration,
         fetch: impl FnOnce() -> Result<String>,
     ) -> Result<String> {
-        let now = Timestamp::now();
-        if let Some(body) = self.get(key, now)? {
+        if let Some(body) = self.get(key)? {
             return Ok(body);
         }
         let body = fetch()?;
-        self.put(key, &body, ttl, now)?;
+        self.put(key, &body, ttl)?;
         Ok(body)
     }
 
-    fn get(&self, key: &str, now: Timestamp) -> Result<Option<String>> {
+    /// The body cached under `key`, if it is younger than its TTL.
+    pub fn get(&self, key: &str) -> Result<Option<String>> {
+        self.get_at(key, Timestamp::now())
+    }
+
+    pub fn put(&self, key: &str, body: &str, ttl: Duration) -> Result<()> {
+        self.put_at(key, body, ttl, Timestamp::now())
+    }
+
+    fn get_at(&self, key: &str, now: Timestamp) -> Result<Option<String>> {
         let body = self
             .conn
             .prepare_cached(
@@ -69,7 +77,7 @@ impl Cache {
         Ok(body)
     }
 
-    fn put(&self, key: &str, body: &str, ttl: Duration, now: Timestamp) -> Result<()> {
+    fn put_at(&self, key: &str, body: &str, ttl: Duration, now: Timestamp) -> Result<()> {
         self.conn
             .prepare_cached(
                 "INSERT OR REPLACE INTO responses (key, body, fetched_at, ttl_s) VALUES (?1, ?2, ?3, ?4)",
@@ -102,10 +110,10 @@ mod tests {
     fn an_expired_entry_is_not_served() {
         let cache = Cache::open_in_memory().unwrap();
         let then = Timestamp::from_second(1_000_000).unwrap();
-        cache.put("k", "old", DAY, then).unwrap();
+        cache.put_at("k", "old", DAY, then).unwrap();
         let next_day = Timestamp::from_second(1_000_000 + 86_401).unwrap();
-        assert_eq!(cache.get("k", then).unwrap().as_deref(), Some("old"));
-        assert_eq!(cache.get("k", next_day).unwrap(), None);
+        assert_eq!(cache.get_at("k", then).unwrap().as_deref(), Some("old"));
+        assert_eq!(cache.get_at("k", next_day).unwrap(), None);
     }
 
     #[test]
