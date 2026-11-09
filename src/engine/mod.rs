@@ -4,11 +4,14 @@
 //!
 //! A build runs these steps in order:
 //! 1. [`profile`]: taste and exposure from every play.
-//! 2. `pools`: candidates from each pool (deep, near, far).
+//! 2. [`pools`]: candidates from each pool (deep, near, far), then the
+//!    [`filters`] every candidate must pass.
 //! 3. [`select`]: the playlist, split across pools by the bandit.
 //! 4. [`feedback`]: how past recommendations fared, which tunes step 3.
 
 pub mod candidate;
 pub mod feedback;
+pub mod filters;
+pub mod pools;
 pub mod profile;
 pub mod select;
