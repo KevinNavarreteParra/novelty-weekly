@@ -1,0 +1,8 @@
+[Unit]
+Description=Novelty Weekly: record recently played tracks
+
+[Service]
+Type=oneshot
+# prun resolves the pass:// references in the repo's .env at launch.
+WorkingDirectory=%h/utilities/recmus
+ExecStart=%h/.local/bin/prun %h/.cargo/bin/novelty poll

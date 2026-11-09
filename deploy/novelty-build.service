@@ -1,0 +1,7 @@
+[Unit]
+Description=Novelty Weekly: build and publish this week's playlist
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/utilities/recmus
+ExecStart=%h/.local/bin/prun %h/.cargo/bin/novelty build

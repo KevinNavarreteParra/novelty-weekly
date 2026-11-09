@@ -1,0 +1,9 @@
+[Unit]
+Description=Novelty Weekly: build every Monday morning
+
+[Timer]
+OnCalendar=Mon *-*-* 06:00 America/Los_Angeles
+Persistent=true
+
+[Install]
+WantedBy=timers.target
