@@ -7,4 +7,6 @@
 //! top tracks for the artists it scored) are split into stages, so the caller
 //! does the fetching between them and the pools stay free of I/O.
 
+pub mod deep;
+pub mod far;
 pub mod near;
