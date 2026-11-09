@@ -3,9 +3,11 @@
 //! [`build`] runs these steps in order, each one a call into the engine with
 //! what the step before produced:
 //!
-//! 1. **Profile**: taste, exposure and seeds, from every play.
+//! 1. **Profile**: taste, exposure and seeds, from every play, plus the cold
+//!    start until a history export is imported.
 //! 2. **Pools**: knowledge gathered for the seeds, then deep, near and far
-//!    candidates.
+//!    candidates. A cold start has no deep candidates: without a history,
+//!    which of a liked artist's tracks I've heard is unknown.
 //! 3. **Filters**: the hard rules.
 //! 4. **Beliefs**: how past picks fared, as the bandit's posteriors.
 //! 5. **Select and resolve**: `k` picks across the pools, each matched to a
@@ -188,21 +190,38 @@ pub fn build(
 
     // 1. Profile.
     let plays = store.plays()?;
-    if plays.is_empty() {
-        bail!("no listens yet: run `novelty ingest-history` or `novelty poll` first");
+    let cold_start = if store.has_history()? {
+        None
+    } else {
+        Some(store.cold_start()?)
+    };
+    let profile = Profile::build(&plays, cold_start.as_ref(), now, &params.profile);
+    if profile.ranked_artists().is_empty() {
+        bail!(
+            "no taste to go on yet: run `novelty ingest-history`, or `novelty cold-start` \
+             until the export arrives"
+        );
     }
-    let profile = Profile::build(&plays, now, &params.profile);
     let seeds = profile.seeds(SeedPlan::default(), rng);
     info!(
-        "profile: {} plays, {} liked artists, {} seeds",
+        "profile: {} plays{}, {} liked artists, {} seeds",
         plays.len(),
+        if cold_start.is_some() {
+            " and the cold start"
+        } else {
+            ""
+        },
         profile.ranked_artists().len(),
         seeds.len()
     );
 
     // 2. Pools.
     let mut candidates = near_candidates(&gather, &profile, &seeds, params)?;
-    candidates.extend(deep_candidates(&gather, &profile, service)?);
+    if cold_start.is_none() {
+        candidates.extend(deep_candidates(&gather, &profile, service)?);
+    } else {
+        info!("cold start: no deep cuts until a history export is imported");
+    }
     candidates.extend(far_candidates(&gather, &profile, &seeds, params, rng)?);
     info!("{} candidates", candidates.len());
 

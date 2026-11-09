@@ -118,6 +118,7 @@ mod tests {
         }];
         let profile = Profile::build(
             &plays,
+            None,
             Timestamp::UNIX_EPOCH,
             &ProfileParams {
                 tau_days: 365.0,

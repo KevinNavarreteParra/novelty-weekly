@@ -123,6 +123,7 @@ mod tests {
         let plays = [play(1, 10), play(1, 10), play(2, 20)];
         Profile::build(
             &plays,
+            None,
             Timestamp::UNIX_EPOCH,
             &ProfileParams {
                 tau_days: 365.0,

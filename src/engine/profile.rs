@@ -7,12 +7,26 @@ use jiff::Timestamp;
 use rand::Rng;
 use rand::seq::IndexedRandom;
 
-use crate::model::{ArtistId, ArtistTags, Play, StartedBy, TrackId, Verdict};
+use crate::model::{ArtistId, ArtistTags, ColdStart, Play, Span, StartedBy, TrackId, Verdict};
 
 /// A skip counts against an artist this much, relative to a completion.
 const SKIP_PENALTY: f64 = 0.25;
 
+/// A ranked track counts toward its artist at this fraction of a ranked
+/// artist (cold start only).
+const RANKED_TRACK_SHARE: f64 = 0.2;
+
 const MS_PER_DAY: f64 = 86_400_000.0;
+
+/// What the top of a ranking over `span` is worth, in completed listens: the
+/// cold start's "synthetic weights" (spec §5.3).
+fn top_of_ranking(span: Span) -> f64 {
+    match span {
+        Span::Month => 10.0,
+        Span::HalfYear => 25.0,
+        Span::Year => 50.0,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ProfileParams {
@@ -63,41 +77,84 @@ impl Profile {
     ///
     /// where `w` is 1, or `autoplay_weight` for autoplayed listens. Partial and
     /// still-pending listens count as heard but say nothing about taste.
-    pub fn build(plays: &[Play], now: Timestamp, params: &ProfileParams) -> Profile {
-        let mut affinity: HashMap<ArtistId, f64> = HashMap::new();
-        let mut heard: HashSet<TrackId> = HashSet::new();
-        let mut known: HashSet<ArtistId> = HashSet::new();
-
+    ///
+    /// Until a history is imported, a [`ColdStart`] adds to the same sum, in
+    /// completed listens:
+    ///
+    /// - an artist ranked `r` of `n` over a span: `top · (n − r) / n`, where
+    ///   `top` is 10, 25 or 50 for a month, half year or year;
+    /// - a ranked track: a fifth of that, toward its artist;
+    /// - a saved track: one completed listen, from when it was saved.
+    ///
+    /// Everything ranked or saved counts as heard.
+    pub fn build(
+        plays: &[Play],
+        cold_start: Option<&ColdStart>,
+        now: Timestamp,
+        params: &ProfileParams,
+    ) -> Profile {
+        let mut profile = Profile::default();
         for play in plays {
-            heard.insert(play.track);
-            known.insert(play.artist);
-
-            let direction = match play.verdict() {
-                Some(Verdict::Completed) => 1.0,
-                Some(Verdict::Skipped) => -SKIP_PENALTY,
-                Some(Verdict::Partial) | None => continue,
-            };
-            let chooser = if play.started_by == StartedBy::Autoplay {
-                params.autoplay_weight
-            } else {
-                1.0
-            };
-            let age_days = (now.as_millisecond() - play.started_at.as_millisecond()).max(0) as f64
-                / MS_PER_DAY;
-            let decay = (-age_days / params.tau_days).exp();
-            *affinity.entry(play.artist).or_default() += direction * chooser * decay;
+            profile.add_play(play, now, params);
         }
-
-        affinity.retain(|_, a| *a > 0.0);
-        let mut ranked: Vec<(ArtistId, f64)> = affinity.iter().map(|(a, s)| (*a, *s)).collect();
-        ranked.sort_by(|x, y| y.1.total_cmp(&x.1).then(x.0.cmp(&y.0)));
-
-        Profile {
-            affinity,
-            heard,
-            known,
-            ranked,
+        if let Some(cold) = cold_start {
+            profile.add_cold_start(cold, now, params);
         }
+        profile.rank();
+        profile
+    }
+
+    fn add_play(&mut self, play: &Play, now: Timestamp, params: &ProfileParams) {
+        self.heard.insert(play.track);
+        self.known.insert(play.artist);
+
+        let direction = match play.verdict() {
+            Some(Verdict::Completed) => 1.0,
+            Some(Verdict::Skipped) => -SKIP_PENALTY,
+            Some(Verdict::Partial) | None => return,
+        };
+        let chooser = if play.started_by == StartedBy::Autoplay {
+            params.autoplay_weight
+        } else {
+            1.0
+        };
+        let weight = direction * chooser * decay(play.started_at, now, params.tau_days);
+        *self.affinity.entry(play.artist).or_default() += weight;
+    }
+
+    fn add_cold_start(&mut self, cold: &ColdStart, now: Timestamp, params: &ProfileParams) {
+        // Rank r of n is worth (n - r) / n of the top: 1 at the top, 1/n at the bottom.
+        let position = |rank: usize, n: usize| (n - rank) as f64 / n as f64;
+
+        for (span, artists) in &cold.top_artists {
+            for (rank, artist) in artists.iter().enumerate() {
+                self.known.insert(*artist);
+                let weight = top_of_ranking(*span) * position(rank, artists.len());
+                *self.affinity.entry(*artist).or_default() += weight;
+            }
+        }
+        for (span, tracks) in &cold.top_tracks {
+            for (rank, (track, artist)) in tracks.iter().enumerate() {
+                self.heard.insert(*track);
+                self.known.insert(*artist);
+                let weight =
+                    RANKED_TRACK_SHARE * top_of_ranking(*span) * position(rank, tracks.len());
+                *self.affinity.entry(*artist).or_default() += weight;
+            }
+        }
+        for (track, artist, saved_at) in &cold.saved {
+            self.heard.insert(*track);
+            self.known.insert(*artist);
+            *self.affinity.entry(*artist).or_default() += decay(*saved_at, now, params.tau_days);
+        }
+    }
+
+    /// Keeps the artists with positive affinity and orders them, best first.
+    fn rank(&mut self) {
+        self.affinity.retain(|_, a| *a > 0.0);
+        self.ranked = self.affinity.iter().map(|(a, s)| (*a, *s)).collect();
+        self.ranked
+            .sort_by(|x, y| y.1.total_cmp(&x.1).then(x.0.cmp(&y.0)));
     }
 
     pub fn affinity(&self, artist: ArtistId) -> f64 {
@@ -132,6 +189,12 @@ impl Profile {
         );
         seeds
     }
+}
+
+/// `e^(-age/τ)`: how much something from `at` still counts at `now`.
+fn decay(at: Timestamp, now: Timestamp, tau_days: f64) -> f64 {
+    let age_days = (now.as_millisecond() - at.as_millisecond()).max(0) as f64 / MS_PER_DAY;
+    (-age_days / tau_days).exp()
 }
 
 /// How much of my listening each tag accounts for (spec §7.1):
@@ -206,7 +269,7 @@ mod tests {
             play(1, 11, 0, Ending::Skipped, StartedBy::Listener),
             play(2, 20, 365, Ending::Finished, StartedBy::Listener),
         ];
-        let p = Profile::build(&plays, now(), &params());
+        let p = Profile::build(&plays, None, now(), &params());
         assert!((p.affinity(ArtistId(1)) - 0.75).abs() < 1e-9);
         assert!((p.affinity(ArtistId(2)) - (-1.0f64).exp()).abs() < 1e-9);
         assert_eq!(p.ranked_artists()[0].0, ArtistId(1));
@@ -215,18 +278,61 @@ mod tests {
     #[test]
     fn autoplay_counts_less() {
         let plays = [play(1, 10, 0, Ending::Finished, StartedBy::Autoplay)];
-        let p = Profile::build(&plays, now(), &params());
+        let p = Profile::build(&plays, None, now(), &params());
         assert!((p.affinity(ArtistId(1)) - 0.5).abs() < 1e-9);
     }
 
     #[test]
     fn a_skipped_only_artist_has_no_affinity_but_is_still_heard() {
         let plays = [play(3, 30, 0, Ending::Skipped, StartedBy::Listener)];
-        let p = Profile::build(&plays, now(), &params());
+        let p = Profile::build(&plays, None, now(), &params());
         assert_eq!(p.affinity(ArtistId(3)), 0.0);
         assert!(p.ranked_artists().is_empty());
         assert!(p.knows(ArtistId(3)));
         assert!(p.heard(TrackId(30)));
+    }
+
+    /// Year ranking: artists 1 then 2. Month ranking: track 30 by artist 3.
+    /// Saved a year ago: track 40 by artist 4.
+    fn cold_start() -> ColdStart {
+        let year_ago = Timestamp::from_millisecond(635 * DAY_MS).unwrap();
+        ColdStart {
+            top_artists: [(Span::Year, vec![ArtistId(1), ArtistId(2)])].into(),
+            top_tracks: [(Span::Month, vec![(TrackId(30), ArtistId(3))])].into(),
+            saved: vec![(TrackId(40), ArtistId(4), year_ago)],
+        }
+    }
+
+    #[test]
+    fn a_cold_start_ranks_what_the_service_ranks_above_old_saves() {
+        let p = Profile::build(&[], Some(&cold_start()), now(), &params());
+        let order: Vec<ArtistId> = p.ranked_artists().iter().map(|(a, _)| *a).collect();
+        assert_eq!(order, [ArtistId(1), ArtistId(2), ArtistId(3), ArtistId(4)]);
+        assert!((p.affinity(ArtistId(1)) - 50.0).abs() < 1e-9);
+        assert!((p.affinity(ArtistId(2)) - 25.0).abs() < 1e-9);
+        assert!((p.affinity(ArtistId(3)) - 2.0).abs() < 1e-9);
+        assert!((p.affinity(ArtistId(4)) - (-1.0f64).exp()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn everything_ranked_or_saved_counts_as_heard() {
+        let p = Profile::build(&[], Some(&cold_start()), now(), &params());
+        assert!(p.heard(TrackId(30)) && p.heard(TrackId(40)));
+        assert!((1..=4).all(|a| p.knows(ArtistId(a))));
+        assert!(
+            !p.heard(TrackId(10)),
+            "a ranked artist's other tracks are unknown"
+        );
+    }
+
+    #[test]
+    fn a_cold_start_adds_to_plays_before_the_floor() {
+        // Four skips of artist 2 cost 1; its rank in the cold start is worth 25.
+        let plays: Vec<Play> = (0..4)
+            .map(|t| play(2, 20 + t, 0, Ending::Skipped, StartedBy::Listener))
+            .collect();
+        let p = Profile::build(&plays, Some(&cold_start()), now(), &params());
+        assert!((p.affinity(ArtistId(2)) - 24.0).abs() < 1e-9);
     }
 
     #[test]
@@ -237,7 +343,7 @@ mod tests {
                     .map(move |i| play(a, a * 1000 + i, 0, Ending::Finished, StartedBy::Listener))
             })
             .collect();
-        let p = Profile::build(&plays, now(), &params());
+        let p = Profile::build(&plays, None, now(), &params());
         let plan = SeedPlan {
             top: 10,
             sampled: 5,
@@ -258,7 +364,7 @@ mod tests {
             play(1, 12, 0, Ending::Finished, StartedBy::Listener),
             play(2, 20, 0, Ending::Finished, StartedBy::Listener),
         ];
-        let p = Profile::build(&plays, now(), &params());
+        let p = Profile::build(&plays, None, now(), &params());
         let tags = HashMap::from([
             (
                 ArtistId(1),
