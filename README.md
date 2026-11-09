@@ -60,3 +60,7 @@ novelty ledger show
 ```
 
 `scripts/check.sh` runs the local CI: fmt, clippy, tests.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

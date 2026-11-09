@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "A self-hosted weekly playlist where novelty is the objective function."
 repository = "https://github.com/KevinNavarreteParra/novelty-weekly"
+license = "MIT"
 publish = false
 
 [dependencies]
