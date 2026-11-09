@@ -3,5 +3,5 @@ Description=Novelty Weekly: back up the database (the ledger is irreplaceable)
 
 [Service]
 Type=oneshot
-Environment=NOVELTY_HOME=%h/.local/share/novelty
-ExecStart=/bin/sh -c 'mkdir -p "$NOVELTY_HOME/backups" && sqlite3 "$NOVELTY_HOME/novelty.db" ".backup $NOVELTY_HOME/backups/novelty-$(date +%%F).db"'
+# No secrets needed, so no prun.
+ExecStart=%h/.cargo/bin/novelty backup

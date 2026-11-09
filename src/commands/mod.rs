@@ -2,6 +2,7 @@
 //! the engine together; none of them holds recommendation logic itself.
 
 mod auth;
+mod backup;
 pub mod build;
 pub mod cold_start;
 mod ingest;
@@ -26,6 +27,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::IngestHistory { path } => ingest::history(&app, &path),
         Command::Auth { paste } => auth::run(&app, paste),
         Command::ColdStart => cold_start::run(&app),
+        Command::Backup => backup::run(&app),
         Command::Poll => poll::run(&app),
         Command::Build(args) => build::run(&app, &args),
         Command::Report(_) => not_yet("report"),

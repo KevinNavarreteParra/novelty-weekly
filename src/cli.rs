@@ -46,6 +46,8 @@ pub enum Command {
     Build(BuildArgs),
     /// Print listening and recommendation metrics.
     Report(ReportArgs),
+    /// Copy the database to $NOVELTY_HOME/backups, keeping 30 days of copies.
+    Backup,
     /// Inspect past recommendations.
     Ledger {
         #[command(subcommand)]

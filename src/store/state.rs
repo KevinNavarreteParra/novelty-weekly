@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use jiff::Timestamp;
 use rusqlite::{OptionalExtension, params};
 
@@ -59,6 +59,13 @@ impl Store {
         Ok(())
     }
 
+    /// Writes a consistent copy of the database to `path`, which must not exist.
+    pub fn back_up_to(&self, path: &std::path::Path) -> Result<()> {
+        let path = path.to_str().context("backup path isn't UTF-8")?;
+        self.conn.execute("VACUUM INTO ?1", [path])?;
+        Ok(())
+    }
+
     /// Starts a run log entry; finish it with [`Store::finish_run`].
     pub fn start_run(&self, kind: &str) -> Result<i64> {
         self.conn.execute(
@@ -97,6 +104,20 @@ impl Store {
 mod tests {
     use super::*;
     use crate::model::ArtistRef;
+
+    #[test]
+    fn a_backup_holds_the_same_data() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_setting(PLAYLIST_ID, "p1").unwrap();
+        let dir = std::env::temp_dir().join(format!("novelty-backup-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("copy.db");
+        store.back_up_to(&path).unwrap();
+        let copy = Store::open(&path).unwrap();
+        let playlist = copy.setting(PLAYLIST_ID).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(playlist.as_deref(), Some("p1"));
+    }
 
     #[test]
     fn settings_overwrite() {
