@@ -16,7 +16,7 @@ use rand::seq::IndexedRandom;
 
 use crate::engine::candidate::{Candidate, Why};
 use crate::engine::profile::Profile;
-use crate::model::{Arm, ArtistId, ArtistTag, Pool, TrackId};
+use crate::model::{Arm, ArtistId, ArtistTags, Pool, PopularTracks};
 
 /// Tags always worth sampling, even when no artist I know carries them.
 pub const SEED_TAGS: &[&str] = &[
@@ -75,7 +75,7 @@ impl Default for TagSampling {
 
 /// The tags to sample from: any tag on at least `min_artists` known artists,
 /// plus [`SEED_TAGS`].
-pub fn tag_universe(tags: &HashMap<ArtistId, Vec<ArtistTag>>, min_artists: usize) -> Vec<String> {
+pub fn tag_universe(tags: &ArtistTags, min_artists: usize) -> Vec<String> {
     let mut artists_per_tag: HashMap<&str, usize> = HashMap::new();
     for artist_tags in tags.values() {
         for tag in artist_tags {
@@ -127,7 +127,7 @@ pub fn from_tag_chart(
     share: f64,
     chart: &[ArtistId],
     profile: &Profile,
-    popular: &HashMap<ArtistId, Vec<TrackId>>,
+    popular: &PopularTracks,
     per_artist: usize,
 ) -> Vec<Candidate> {
     let unheard = chart.iter().filter(|a| profile.artist_plays(**a) == 0);
@@ -168,7 +168,7 @@ pub fn walk(
 /// Candidates from where each walk ended.
 pub fn from_walks(
     walks: &[Vec<ArtistId>],
-    popular: &HashMap<ArtistId, Vec<TrackId>>,
+    popular: &PopularTracks,
     per_artist: usize,
 ) -> Vec<Candidate> {
     let ends = walks
@@ -181,14 +181,14 @@ pub fn from_walks(
 /// offering up to `per_artist` of its most played tracks.
 fn candidates_in_order(
     artists: impl Iterator<Item = (ArtistId, Why)>,
-    popular: &HashMap<ArtistId, Vec<TrackId>>,
+    popular: &PopularTracks,
     per_artist: usize,
 ) -> Vec<Candidate> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     let fresh = artists.filter(|(a, _)| seen.insert(*a));
     for (rank, (artist, why)) in fresh.enumerate() {
-        for &track in popular.get(&artist).into_iter().flatten().take(per_artist) {
+        for &(track, _) in popular.get(&artist).into_iter().flatten().take(per_artist) {
             out.push(Candidate {
                 track,
                 artist,
@@ -210,7 +210,7 @@ mod tests {
 
     use super::*;
     use crate::engine::profile::ProfileParams;
-    use crate::model::{Ending, Play, StartedBy};
+    use crate::model::{ArtistTag, Ending, Play, StartedBy, TrackId};
 
     fn profile_having_heard(artists: &[i64]) -> Profile {
         let plays: Vec<Play> = artists
@@ -315,9 +315,9 @@ mod tests {
     fn chart_candidates_skip_heard_artists_and_rank_flatly() {
         let profile = profile_having_heard(&[1]);
         let popular = HashMap::from([
-            (ArtistId(1), vec![TrackId(1)]),
-            (ArtistId(2), vec![TrackId(2)]),
-            (ArtistId(3), vec![TrackId(3)]),
+            (ArtistId(1), vec![(TrackId(1), None)]),
+            (ArtistId(2), vec![(TrackId(2), None)]),
+            (ArtistId(3), vec![(TrackId(3), None)]),
         ]);
         let chart = [ArtistId(1), ArtistId(2), ArtistId(3)];
         let out = from_tag_chart("fado", 0.0, &chart, &profile, &popular, 1);

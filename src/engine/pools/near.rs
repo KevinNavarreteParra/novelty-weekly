@@ -8,10 +8,7 @@ use std::collections::HashMap;
 
 use crate::engine::candidate::{Candidate, Why};
 use crate::engine::profile::Profile;
-use crate::model::{Arm, ArtistId, Pool, TrackId};
-
-/// Similarity links per artist: `(other artist, similarity in [0, 1])`.
-pub type SimilarityGraph = HashMap<ArtistId, Vec<(ArtistId, f64)>>;
+use crate::model::{Arm, ArtistId, Pool, PopularTracks, SimilarityGraph};
 
 /// How many contributing seeds a rationale names.
 const RATIONALE_SEEDS: usize = 3;
@@ -77,7 +74,7 @@ pub fn score_artists(
 pub fn candidates(
     artists: &[NearArtist],
     listeners: &HashMap<ArtistId, u64>,
-    popular: &HashMap<ArtistId, Vec<TrackId>>,
+    popular: &PopularTracks,
     gamma: f64,
     per_artist: usize,
 ) -> Vec<Candidate> {
@@ -90,7 +87,7 @@ pub fn candidates(
             .into_iter()
             .flatten()
             .take(per_artist);
-        for (rank, &track) in tracks.enumerate() {
+        for (rank, &(track, _)) in tracks.enumerate() {
             out.push(Candidate {
                 track,
                 artist: artist.artist,
@@ -110,7 +107,7 @@ mod tests {
 
     use super::*;
     use crate::engine::profile::ProfileParams;
-    use crate::model::{Ending, Play, StartedBy};
+    use crate::model::{Ending, Play, StartedBy, TrackId};
 
     /// I've completed one track each by artists 1 and 2, twice as often by 1.
     fn profile() -> Profile {
@@ -177,8 +174,8 @@ mod tests {
         ];
         let listeners = HashMap::from([(ArtistId(100), 5_000_000), (ArtistId(200), 5_000)]);
         let popular = HashMap::from([
-            (ArtistId(100), vec![TrackId(1)]),
-            (ArtistId(200), vec![TrackId(2)]),
+            (ArtistId(100), vec![(TrackId(1), None)]),
+            (ArtistId(200), vec![(TrackId(2), None)]),
         ]);
         let out = candidates(&artists, &listeners, &popular, 0.5, 3);
         let famous = out.iter().find(|c| c.artist == ArtistId(100)).unwrap();

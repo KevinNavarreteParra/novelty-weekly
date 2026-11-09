@@ -7,7 +7,7 @@ use jiff::Timestamp;
 use rand::Rng;
 use rand::seq::IndexedRandom;
 
-use crate::model::{ArtistId, ArtistTag, Play, StartedBy, TrackId, Verdict};
+use crate::model::{ArtistId, ArtistTags, Play, StartedBy, TrackId, Verdict};
 
 /// A skip counts against an artist this much, relative to a completion.
 const SKIP_PENALTY: f64 = 0.25;
@@ -139,10 +139,7 @@ impl Profile {
 /// with each artist's tag weights normalized to sum to 1, so a heavily tagged
 /// artist doesn't count more than a sparsely tagged one. Artists without tags
 /// still count in the denominator. Shares sum to at most 1.
-pub fn tag_shares(
-    profile: &Profile,
-    tags: &HashMap<ArtistId, Vec<ArtistTag>>,
-) -> HashMap<String, f64> {
+pub fn tag_shares(profile: &Profile, tags: &ArtistTags) -> HashMap<String, f64> {
     let total: f64 = profile.ranked.iter().map(|(_, a)| a).sum();
     let mut shares: HashMap<String, f64> = HashMap::new();
     if total <= 0.0 {
@@ -169,7 +166,7 @@ mod tests {
     use rand::rngs::StdRng;
 
     use super::*;
-    use crate::model::Ending;
+    use crate::model::{ArtistTag, Ending};
 
     const DAY_MS: i64 = 86_400_000;
 

@@ -18,7 +18,7 @@ use rand::Rng;
 use self::allocate::{Posterior, ShareBounds};
 use super::candidate::Candidate;
 use super::profile::Profile;
-use crate::model::{ArtistId, ArtistTag, Pool, TrackId};
+use crate::model::{ArtistId, ArtistTag, ArtistTags, Pool, TrackId};
 
 #[derive(Debug, Clone)]
 pub struct SelectParams {
@@ -60,10 +60,8 @@ pub struct Selection {
     pub shortfall: BTreeMap<Pool, usize>,
 }
 
-/// Every candidate's artist's tags, for diversity: each artist's tags as a
-/// vector, and its strongest tag as its "dominant" one.
-pub type ArtistTags = HashMap<ArtistId, Vec<ArtistTag>>;
-
+/// `tags` gives each candidate artist's tags: as a vector for MMR, and the
+/// strongest as its "dominant" tag for the tag cap.
 pub fn select(
     candidates: Vec<Candidate>,
     posteriors: &BTreeMap<Pool, Posterior>,

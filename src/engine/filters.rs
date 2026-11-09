@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::candidate::Candidate;
 use super::profile::Profile;
-use crate::model::{ArtistId, ArtistTag, Pool, TrackId};
+use crate::model::{ArtistId, ArtistTags, Pool, TrackId};
 
 /// Shortest track worth recommending; shorter is usually an interlude or skit.
 pub const MIN_DURATION_MS: u32 = 90_000;
@@ -31,7 +31,7 @@ pub struct Filters<'a> {
     /// Track lengths; a track with no known length passes, and is checked
     /// again once resolution to the listening service supplies one.
     pub durations: &'a HashMap<TrackId, u32>,
-    pub tags: &'a HashMap<ArtistId, Vec<ArtistTag>>,
+    pub tags: &'a ArtistTags,
     pub blocked_artists: &'a HashSet<ArtistId>,
     /// Normalized with `model::names::tag_key`.
     pub blocked_tags: &'a HashSet<String>,
@@ -91,7 +91,7 @@ mod tests {
     use super::*;
     use crate::engine::candidate::Why;
     use crate::engine::profile::ProfileParams;
-    use crate::model::{Arm, Ending, Play, StartedBy};
+    use crate::model::{Arm, ArtistTag, Ending, Play, StartedBy};
 
     fn candidate(pool: Pool, track: i64, artist: i64) -> Candidate {
         Candidate {

@@ -27,7 +27,9 @@ mod recommendation;
 
 pub use catalog::{ArtistRef, TrackRef};
 pub use ids::{ArtistId, ExternalIds, Namespace, TrackId};
-pub use knowledge::{ArtistTag, PopularTrack, SimilarArtist};
+pub use knowledge::{
+    ArtistTag, ArtistTags, PopularTrack, PopularTracks, SimilarArtist, SimilarityGraph,
+};
 pub use listen::{
     COMPLETE_AFTER_MS, Ending, Listen, Play, Provenance, SKIP_BEFORE_MS, StartedBy, Verdict, judge,
 };

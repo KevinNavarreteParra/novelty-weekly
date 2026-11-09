@@ -1,8 +1,22 @@
 //! What a knowledge integration (Last.fm today) says about artists: who is near
-//! whom, how they are described, and which of their tracks people play.
+//! whom, how they are described, and which of their tracks people play; and
+//! the same facts resolved to store IDs, as the engine reads them.
+
+use std::collections::HashMap;
 
 use super::catalog::{ArtistRef, TrackRef};
+use super::ids::{ArtistId, TrackId};
 use super::names::tag_key;
+
+/// Resolved: the similarity links out of each artist, strongest first.
+pub type SimilarityGraph = HashMap<ArtistId, Vec<(ArtistId, f64)>>;
+
+/// Resolved: each artist's tags.
+pub type ArtistTags = HashMap<ArtistId, Vec<ArtistTag>>;
+
+/// Resolved: each artist's most played tracks, most played first, with their
+/// listener counts where known.
+pub type PopularTracks = HashMap<ArtistId, Vec<(TrackId, Option<u64>)>>;
 
 /// An artist similar to another one.
 #[derive(Debug, Clone, PartialEq)]
