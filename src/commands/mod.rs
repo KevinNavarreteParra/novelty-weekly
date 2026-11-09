@@ -30,7 +30,11 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Ledger {
             action: LedgerAction::Show { week },
         } => ledger::show(&app, week.as_deref()),
-        Command::Block { .. } => not_yet("block"),
+        Command::Block { .. } => {
+            bail!(
+                "`novelty block` is not implemented yet; add the name to [blocklist] in config.toml"
+            )
+        }
     }
 }
 

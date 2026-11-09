@@ -124,7 +124,12 @@ pub struct Built {
 pub fn run(app: &App, args: &BuildArgs) -> Result<()> {
     let store = app.open_store()?;
     let params = BuildParams::new(&app.config, args)?;
-    let run = store.start_run("build")?;
+    // Dry runs are previews, not runs worth alerting on.
+    let run = if params.dry_run {
+        None
+    } else {
+        Some(store.start_run("build")?)
+    };
     let result = (|| {
         let knowledge = app.lastfm()?;
         let mut spotify = app.spotify()?;
@@ -141,7 +146,7 @@ pub fn run(app: &App, args: &BuildArgs) -> Result<()> {
         Ok(built) => format!("{}: {} picks", built.week, built.picks.len()),
         Err(e) => format!("{e:#}"),
     };
-    if !params.dry_run {
+    if let Some(run) = run {
         store.finish_run(run, result.is_ok(), &notes)?;
     }
     let built = result?;
