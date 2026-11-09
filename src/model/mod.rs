@@ -28,7 +28,9 @@ mod recommendation;
 pub use catalog::{ArtistRef, TrackRef};
 pub use ids::{ArtistId, ExternalIds, Namespace, TrackId};
 pub use knowledge::{ArtistTag, PopularTrack, SimilarArtist};
-pub use listen::{Ending, Listen, Play, Provenance, StartedBy, Verdict, judge};
+pub use listen::{
+    COMPLETE_AFTER_MS, Ending, Listen, Play, Provenance, SKIP_BEFORE_MS, StartedBy, Verdict, judge,
+};
 pub use recommendation::{Arm, Pool, Recommendation, Week};
 
 /// Declares a fieldless enum whose variants are stored as fixed strings, with
