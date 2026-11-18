@@ -18,8 +18,8 @@ use novelty::engine::select::SelectParams;
 use novelty::engine::select::allocate::ShareBounds;
 use novelty::integrations::{Knowledge, ListeningService};
 use novelty::model::{
-    ArtistRef, ArtistTag, Ending, Listen, Namespace, Pool, PopularTrack, Provenance, SimilarArtist,
-    Span, StartedBy, TrackRef,
+    ArtistRef, ArtistTag, Ending, Familiarity, Listen, Namespace, Pool, PopularTrack, Provenance,
+    SimilarArtist, Span, StartedBy, TrackRef,
 };
 use novelty::store::Store;
 
@@ -161,6 +161,10 @@ fn now() -> Timestamp {
 
 /// I've completed tracks 0-3 by "Liked 0", "Liked 1" and "Liked 2".
 fn store_with_history() -> Store {
+    store_with_history_from(Provenance::History)
+}
+
+fn store_with_history_from(provenance: Provenance) -> Store {
     let store = Store::open_in_memory().unwrap();
     let mut listens = Vec::new();
     for artist in 0..3 {
@@ -176,7 +180,7 @@ fn store_with_history() -> Store {
                     ms_played: Some(200_000),
                     ending: Ending::Finished,
                     started_by: StartedBy::Listener,
-                    provenance: Provenance::History,
+                    provenance,
                 });
             }
         }
@@ -486,6 +490,38 @@ fn an_imported_history_retires_the_cold_start() {
         built.picks.iter().any(|(c, _, _)| c.pool == Pool::Deep),
         "deep cuts are back once a history is imported"
     );
+}
+
+#[test]
+fn a_last_year_history_retires_the_cold_start_but_deep_cuts_wait_for_a_full_one() {
+    let store = store_with_history_from(Provenance::BasicHistory);
+    // Spotify says I used to listen to "Near 0" through "Near 9".
+    let lapsed: Vec<(ArtistRef, Familiarity)> = (0..10)
+        .map(|n| (ArtistRef::named(format!("Near {n}")), Familiarity::Lapsed))
+        .collect();
+    store.record_familiarity("spotify", &lapsed).unwrap();
+    let mut service = NewAccount(FakeService::default());
+    cold_start(&store, &mut service).unwrap();
+
+    let built = build(
+        &store,
+        &FakeKnowledge,
+        &mut service,
+        &params(true),
+        now(),
+        &mut StdRng::seed_from_u64(9),
+    )
+    .unwrap();
+    assert_eq!(built.picks.len(), K);
+    assert!(built.picks.iter().all(|(c, _, _)| c.pool != Pool::Deep));
+    let known: HashSet<String> = (0..10).map(|n| format!("Near {n}")).collect();
+    for (_, track, _) in &built.picks {
+        assert!(
+            !known.contains(&track.artist.name),
+            "recommended {} as new, but Spotify says I know them",
+            track.artist.name
+        );
+    }
 }
 
 #[test]

@@ -26,6 +26,8 @@ pub enum Rejection {
 
 pub struct Filters<'a> {
     pub profile: &'a Profile,
+    /// Candidates on an album in my library: heard, though no play says so.
+    pub on_saved_albums: &'a HashSet<TrackId>,
     /// Every track in the ledger.
     pub recommended: &'a HashSet<TrackId>,
     /// Track lengths; a track with no known length passes, and is checked
@@ -39,7 +41,7 @@ pub struct Filters<'a> {
 
 impl Filters<'_> {
     pub fn check(&self, c: &Candidate) -> Result<(), Rejection> {
-        if self.profile.heard(c.track) {
+        if self.profile.heard(c.track) || self.on_saved_albums.contains(&c.track) {
             return Err(Rejection::HeardTrack);
         }
         if self.recommended.contains(&c.track) {
@@ -130,8 +132,10 @@ mod tests {
         let tags = HashMap::from([(ArtistId(3), vec![ArtistTag::new("Christmas", 1.0)])]);
         let blocked_artists = HashSet::from([ArtistId(4)]);
         let blocked_tags = HashSet::from(["christmas".to_owned()]);
+        let on_saved_albums = HashSet::from([TrackId(17)]);
         let filters = Filters {
             profile: &profile,
+            on_saved_albums: &on_saved_albums,
             recommended: &recommended,
             durations: &durations,
             tags: &tags,
@@ -143,6 +147,7 @@ mod tests {
         assert_eq!(check(Pool::Deep, 10, 1), Err(Rejection::HeardTrack));
         assert_eq!(check(Pool::Deep, 11, 1), Err(Rejection::AlreadyRecommended));
         assert_eq!(check(Pool::Deep, 13, 1), Ok(()));
+        assert_eq!(check(Pool::Deep, 17, 1), Err(Rejection::HeardTrack));
         assert_eq!(check(Pool::Near, 13, 1), Err(Rejection::HeardArtist));
         assert_eq!(check(Pool::Near, 12, 2), Err(Rejection::Duration));
         assert_eq!(check(Pool::Far, 14, 3), Err(Rejection::BlockedTag));

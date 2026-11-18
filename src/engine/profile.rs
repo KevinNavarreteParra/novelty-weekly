@@ -7,7 +7,9 @@ use jiff::Timestamp;
 use rand::Rng;
 use rand::seq::IndexedRandom;
 
-use crate::model::{ArtistId, ArtistTags, ColdStart, Play, Span, StartedBy, TrackId, Verdict};
+use crate::model::{
+    ArtistId, ArtistTags, ColdStart, Heard, Play, Span, StartedBy, TrackId, Verdict,
+};
 
 /// A skip counts against an artist this much, relative to a completion.
 const SKIP_PENALTY: f64 = 0.25;
@@ -102,6 +104,15 @@ impl Profile {
         }
         profile.rank();
         profile
+    }
+
+    /// Adds what I know apart from plays (saved, ranked, in my playlists,
+    /// rated by the service): heard and known, but no affinity, since being
+    /// in a playlist from years ago says little about taste now.
+    pub fn with_heard(mut self, heard: &Heard) -> Profile {
+        self.heard.extend(&heard.tracks);
+        self.known.extend(&heard.artists);
+        self
     }
 
     fn add_play(&mut self, play: &Play, now: Timestamp, params: &ProfileParams) {
@@ -376,5 +387,18 @@ mod tests {
         // Artist 1 holds 3/4 of affinity, split evenly; artist 2 holds 1/4.
         assert!((shares["jazz"] - (0.75 * 0.5 + 0.25)).abs() < 1e-9);
         assert!((shares["bebop"] - 0.375).abs() < 1e-9);
+    }
+
+    #[test]
+    fn heard_elsewhere_counts_as_heard_but_not_as_liked() {
+        let heard = Heard {
+            tracks: [TrackId(7)].into(),
+            artists: [ArtistId(3)].into(),
+        };
+        let profile = Profile::build(&[], None, now(), &params()).with_heard(&heard);
+        assert!(profile.heard(TrackId(7)));
+        assert!(profile.knows(ArtistId(3)));
+        assert_eq!(profile.affinity(ArtistId(3)), 0.0);
+        assert!(profile.ranked_artists().is_empty());
     }
 }

@@ -29,7 +29,12 @@ pub enum Command {
         #[arg(long)]
         paste: bool,
     },
-    /// Import a Spotify Extended Streaming History export (safe to re-run).
+    /// Import a Spotify data export (safe to re-run).
+    ///
+    /// Reads either package: Extended Streaming History (every year), or
+    /// Account data (the last year, plus playlists, saved albums and
+    /// Spotify's rating of how much I listen to each artist). A fuller
+    /// history replaces a rougher one wherever both cover the same days.
     IngestHistory {
         /// The export's .zip, or a directory of its JSON files.
         path: PathBuf,

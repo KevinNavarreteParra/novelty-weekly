@@ -1,55 +1,125 @@
-//! Spotify's Extended Streaming History export (spec §5.1), read as listens.
+//! Spotify's data exports (spec §5.1), read as model observations.
 //!
-//! The export is a ZIP of `Streaming_History_Audio_*.json` files, each a JSON
-//! array with one object per stream. It is read in memory and never extracted,
-//! so nothing in the archive lands on disk.
+//! Two packages, requested separately, that can be read from one directory:
+//!
+//! - **Extended streaming history**: `Streaming_History_Audio_*.json`, every
+//!   stream since the account opened, with endings and track URIs.
+//! - **Account data**: `StreamingHistory_music_*.json`, only the last year's
+//!   streams, by name, with end times to the minute; plus the playlists I
+//!   made (`Playlist*.json`), my library (`YourLibrary.json`) and how much
+//!   Spotify says I listen to each artist (`Marquee.json`).
+//!
+//! An archive is read in memory and never extracted, so nothing in it lands
+//! on disk. Files the app doesn't use are ignored.
 
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use jiff::civil::{Date, DateTime};
+use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
 
 use crate::model::{
-    ArtistRef, Ending, ExternalIds, Listen, Namespace, Provenance, StartedBy, TrackRef,
+    AlbumRef, ArtistRef, Ending, ExternalIds, Familiarity, Listen, Namespace, Playlist, Provenance,
+    StartedBy, TrackRef,
 };
 
 /// Largest JSON file accepted from an export. Real ones are a few MB; the cap
 /// keeps a hostile archive from exhausting memory.
 const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 
-/// Every music listen in an export, oldest first. `path` is the `.zip`, or a
+/// What the app reads from an export. A part is `None` when the export has no
+/// file for it, so importing it leaves what's on file alone.
+#[derive(Debug, Default)]
+pub struct Export {
+    /// Music listens from either history, oldest first.
+    pub listens: Vec<Listen>,
+    pub playlists: Option<Vec<Playlist>>,
+    pub saved_albums: Option<Vec<AlbumRef>>,
+    /// Artists Spotify rates my listening of, by how much.
+    pub familiarity: Option<Vec<(ArtistRef, Familiarity)>>,
+}
+
+/// The kinds of file an export holds that the app reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Part {
+    ExtendedHistory,
+    AccountHistory,
+    Playlists,
+    Library,
+    Marquee,
+}
+
+impl Part {
+    fn of(file_name: &str) -> Option<Part> {
+        let base = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
+        let json = |prefix: &str| base.starts_with(prefix) && base.ends_with(".json");
+        if json("Streaming_History_Audio_") {
+            Some(Part::ExtendedHistory)
+        } else if json("StreamingHistory_music_") {
+            Some(Part::AccountHistory)
+        } else if json("Playlist") {
+            Some(Part::Playlists)
+        } else if base == "YourLibrary.json" {
+            Some(Part::Library)
+        } else if base == "Marquee.json" {
+            Some(Part::Marquee)
+        } else {
+            None
+        }
+    }
+}
+
+impl Export {
+    fn add(&mut self, part: Part, json: &str) -> Result<()> {
+        match part {
+            Part::ExtendedHistory => self.listens.extend(parse_extended(json)?),
+            Part::AccountHistory => self.listens.extend(parse_account(json)?),
+            Part::Playlists => self
+                .playlists
+                .get_or_insert_with(Vec::new)
+                .extend(parse_playlists(json)?),
+            Part::Library => self.saved_albums = Some(parse_library(json)?),
+            Part::Marquee => self.familiarity = Some(parse_marquee(json)?),
+        }
+        Ok(())
+    }
+}
+
+/// Everything the app reads from an export. `path` is the `.zip`, or a
 /// directory it was extracted into.
-pub fn read_export(path: &Path) -> Result<Vec<Listen>> {
-    let mut listens = if path.is_dir() {
-        read_dir(path)?
+pub fn read_export(path: &Path) -> Result<Export> {
+    let mut export = Export::default();
+    let files = if path.is_dir() {
+        read_dir(path, &mut export)?
     } else {
-        read_zip(path)?
+        read_zip(path, &mut export)?
     };
-    listens.sort_by_key(|l| l.started_at);
-    Ok(listens)
+    if files == 0 {
+        bail!(
+            "no Spotify export files in {} (looked for Streaming_History_Audio_*.json, \
+             StreamingHistory_music_*.json, Playlist*.json, YourLibrary.json, Marquee.json)",
+            path.display()
+        );
+    }
+    export.listens.sort_by_key(|l| l.started_at);
+    Ok(export)
 }
 
-/// The music files; video and podcast-only files are skipped.
-fn is_audio_history(file_name: &str) -> bool {
-    let base = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
-    base.starts_with("Streaming_History_Audio_") && base.ends_with(".json")
-}
-
-fn read_zip(path: &Path) -> Result<Vec<Listen>> {
+fn read_zip(path: &Path, export: &mut Export) -> Result<usize> {
     let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut archive = zip::ZipArchive::new(file)
         .with_context(|| format!("reading {} as a zip", path.display()))?;
-    let mut listens = Vec::new();
     let mut files = 0;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
         let name = entry.name()?.into_owned();
-        if !entry.is_file() || !is_audio_history(&name) {
+        let Some(part) = Part::of(&name).filter(|_| entry.is_file()) else {
             continue;
-        }
+        };
         if entry.size() > MAX_FILE_BYTES {
             bail!("{name} is larger than {MAX_FILE_BYTES} bytes");
         }
@@ -59,20 +129,15 @@ fn read_zip(path: &Path) -> Result<Vec<Listen>> {
             .by_ref()
             .take(MAX_FILE_BYTES)
             .read_to_string(&mut json)?;
-        listens.extend(parse(&json).with_context(|| format!("parsing {name}"))?);
+        export
+            .add(part, &json)
+            .with_context(|| format!("parsing {name}"))?;
         files += 1;
     }
-    if files == 0 {
-        bail!(
-            "no Streaming_History_Audio_*.json files in {}",
-            path.display()
-        );
-    }
-    Ok(listens)
+    Ok(files)
 }
 
-fn read_dir(dir: &Path) -> Result<Vec<Listen>> {
-    let mut listens = Vec::new();
+fn read_dir(dir: &Path, export: &mut Export) -> Result<usize> {
     let mut files = 0;
     for entry in fs::read_dir(dir).with_context(|| format!("listing {}", dir.display()))? {
         let path = entry?.path();
@@ -80,25 +145,24 @@ fn read_dir(dir: &Path) -> Result<Vec<Listen>> {
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or_default();
-        if !path.is_file() || !is_audio_history(name) {
+        let Some(part) = Part::of(name).filter(|_| path.is_file()) else {
             continue;
+        };
+        if fs::metadata(&path)?.len() > MAX_FILE_BYTES {
+            bail!("{} is larger than {MAX_FILE_BYTES} bytes", path.display());
         }
         let json =
             fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-        listens.extend(parse(&json).with_context(|| format!("parsing {}", path.display()))?);
+        export
+            .add(part, &json)
+            .with_context(|| format!("parsing {}", path.display()))?;
         files += 1;
     }
-    if files == 0 {
-        bail!(
-            "no Streaming_History_Audio_*.json files in {}",
-            dir.display()
-        );
-    }
-    Ok(listens)
+    Ok(files)
 }
 
-/// Parses one export file. Podcast and audiobook rows are dropped.
-pub fn parse(json: &str) -> Result<Vec<Listen>> {
+/// Parses one extended-history file. Podcast and audiobook rows are dropped.
+pub fn parse_extended(json: &str) -> Result<Vec<Listen>> {
     let rows: Vec<Row> = serde_json::from_str(json)?;
     let mut listens = Vec::with_capacity(rows.len());
     for row in rows {
@@ -107,6 +171,161 @@ pub fn parse(json: &str) -> Result<Vec<Listen>> {
         }
     }
     Ok(listens)
+}
+
+/// Parses one account-data history file (`StreamingHistory_music_*.json`).
+///
+/// Rows named "Unknown Artist" / "Unknown Track" are dropped: they are not
+/// music. In a real export they were 15% of rows, every one under 30 s, most
+/// likely the DJ's voice between songs.
+pub fn parse_account(json: &str) -> Result<Vec<Listen>> {
+    let rows: Vec<AccountRow> = serde_json::from_str(json)?;
+    let mut listens = Vec::with_capacity(rows.len());
+    for row in rows {
+        if row.artist_name.trim().is_empty()
+            || row.track_name.trim().is_empty()
+            || (row.artist_name == "Unknown Artist" && row.track_name == "Unknown Track")
+        {
+            continue;
+        }
+        // UTC, to the minute: checked against polled listens of the same days.
+        let ended = DateTime::strptime("%Y-%m-%d %H:%M", &row.end_time)
+            .with_context(|| format!("bad endTime {:?}", row.end_time))?
+            .to_zoned(TimeZone::UTC)?
+            .timestamp();
+        listens.push(Listen {
+            track: TrackRef::new(row.track_name, ArtistRef::named(row.artist_name)),
+            started_at: ended.checked_sub(SignedDuration::from_millis(row.ms_played.into()))?,
+            ms_played: Some(row.ms_played),
+            ending: Ending::Unknown,
+            started_by: StartedBy::Unknown,
+            provenance: Provenance::BasicHistory,
+        });
+    }
+    Ok(listens)
+}
+
+/// One stream in the account data: names, the minute it ended, and how long.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountRow {
+    /// `"2025-11-12 00:41"`, UTC.
+    end_time: String,
+    artist_name: String,
+    track_name: String,
+    ms_played: u32,
+}
+
+/// The playlists in one `Playlist*.json`. Episodes and local files are
+/// dropped; a playlist left with no tracks is too.
+pub fn parse_playlists(json: &str) -> Result<Vec<Playlist>> {
+    #[derive(Deserialize)]
+    struct File {
+        playlists: Vec<PlaylistRow>,
+    }
+    #[derive(Deserialize)]
+    struct PlaylistRow {
+        name: String,
+        #[serde(default)]
+        items: Vec<Item>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Item {
+        track: Option<ItemTrack>,
+        /// `"2026-11-09"`.
+        added_date: Option<String>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ItemTrack {
+        track_name: String,
+        artist_name: String,
+        album_name: Option<String>,
+        /// `spotify:track:<id>`; local files have none.
+        track_uri: Option<String>,
+    }
+
+    let file: File = serde_json::from_str(json)?;
+    let mut playlists = Vec::new();
+    for row in file.playlists {
+        let mut tracks = Vec::new();
+        for item in row.items {
+            let Some(t) = item.track else { continue };
+            let Some(id) = t
+                .track_uri
+                .as_deref()
+                .and_then(|u| u.strip_prefix("spotify:track:"))
+            else {
+                continue;
+            };
+            let mut track = TrackRef::new(t.track_name, ArtistRef::named(t.artist_name));
+            track.album = t.album_name;
+            track.ids = ExternalIds::new().with(Namespace::Spotify, id);
+            let added = item.added_date.and_then(|d| d.parse::<Date>().ok());
+            tracks.push((track, added));
+        }
+        if !tracks.is_empty() {
+            playlists.push(Playlist {
+                name: row.name,
+                tracks,
+            });
+        }
+    }
+    Ok(playlists)
+}
+
+/// The saved albums in `YourLibrary.json`. Its saved tracks are left out:
+/// the API's copy carries when each was saved, and `cold-start` and every
+/// build read that.
+pub fn parse_library(json: &str) -> Result<Vec<AlbumRef>> {
+    #[derive(Deserialize)]
+    struct File {
+        #[serde(default)]
+        albums: Vec<AlbumRow>,
+    }
+    #[derive(Deserialize)]
+    struct AlbumRow {
+        artist: String,
+        album: String,
+    }
+    let file: File = serde_json::from_str(json)?;
+    Ok(file
+        .albums
+        .into_iter()
+        .map(|a| AlbumRef {
+            title: a.album,
+            artist: ArtistRef::named(a.artist),
+        })
+        .collect())
+}
+
+/// `Marquee.json`: Spotify's segment for me, per artist, as used to target
+/// its artist campaigns.
+pub fn parse_marquee(json: &str) -> Result<Vec<(ArtistRef, Familiarity)>> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Row {
+        artist_name: String,
+        segment: String,
+    }
+    let rows: Vec<Row> = serde_json::from_str(json)?;
+    Ok(rows
+        .into_iter()
+        .map(|r| (ArtistRef::named(r.artist_name), familiarity(&r.segment)))
+        .collect())
+}
+
+/// Maps a Marquee segment. Values seen in a real export: "Super Listeners",
+/// "Moderate listeners", "Light listeners", "Previously Active Listeners".
+fn familiarity(segment: &str) -> Familiarity {
+    match segment.to_lowercase().as_str() {
+        "super listeners" => Familiarity::Heavy,
+        "moderate listeners" => Familiarity::Moderate,
+        "light listeners" => Familiarity::Light,
+        "previously active listeners" => Familiarity::Lapsed,
+        _ => Familiarity::Unknown,
+    }
 }
 
 /// One stream as the export writes it. Fields not listed (IP address,
@@ -228,7 +447,7 @@ mod tests {
 
     #[test]
     fn music_rows_become_listens_and_podcasts_are_dropped() {
-        let listens = parse(SAMPLE).unwrap();
+        let listens = parse_extended(SAMPLE).unwrap();
         assert_eq!(listens.len(), 2);
 
         let heroes = &listens[0];
@@ -245,14 +464,14 @@ mod tests {
 
     #[test]
     fn start_time_is_end_time_minus_ms_played() {
-        let heroes = &parse(SAMPLE).unwrap()[0];
+        let heroes = &parse_extended(SAMPLE).unwrap()[0];
         let expected: Timestamp = "2024-03-01T18:18:04Z".parse().unwrap();
         assert_eq!(heroes.started_at, expected);
     }
 
     #[test]
     fn the_skipped_flag_overrides_the_end_reason() {
-        let song = &parse(SAMPLE).unwrap()[1];
+        let song = &parse_extended(SAMPLE).unwrap()[1];
         assert_eq!(song.ending, Ending::Skipped);
         assert_eq!(song.started_by, StartedBy::Sequence);
     }
@@ -281,10 +500,117 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("export.zip");
         fs::write(&path, bytes).unwrap();
-        let listens = read_export(&path).unwrap();
+        let export = read_export(&path).unwrap();
         fs::remove_dir_all(&dir).unwrap();
 
-        assert_eq!(listens.len(), 2);
-        assert!(listens[0].started_at <= listens[1].started_at);
+        assert_eq!(export.listens.len(), 2);
+        assert!(export.listens[0].started_at <= export.listens[1].started_at);
+        assert!(export.playlists.is_none() && export.familiarity.is_none());
+    }
+
+    const ACCOUNT: &str = r#"[
+      {"endTime": "2025-11-12 00:41", "artistName": "Jelly Roll", "trackName": "Save Me",
+       "msPlayed": 38045},
+      {"endTime": "2025-11-12 00:42", "artistName": "Unknown Artist",
+       "trackName": "Unknown Track", "msPlayed": 5877}
+    ]"#;
+
+    #[test]
+    fn account_data_listens_start_ms_played_before_their_minute() {
+        let listens = parse_account(ACCOUNT).unwrap();
+        assert_eq!(listens.len(), 1, "the DJ's voice is not a listen");
+        let save_me = &listens[0];
+        let ended: Timestamp = "2025-11-12T00:41:00Z".parse().unwrap();
+        assert_eq!(
+            save_me.started_at,
+            ended - SignedDuration::from_millis(38_045)
+        );
+        assert_eq!(save_me.ms_played, Some(38_045));
+        assert_eq!(save_me.ending, Ending::Unknown);
+        assert_eq!(save_me.provenance, Provenance::BasicHistory);
+        assert!(save_me.track.ids.get(Namespace::Spotify).is_none());
+    }
+
+    #[test]
+    fn playlists_keep_tracks_with_uris_and_the_day_each_was_added() {
+        let json = r#"{"playlists": [
+          {"name": "Chill", "lastModifiedDate": "2026-10-07", "collaborators": [],
+           "items": [
+             {"track": {"trackName": "Run Through The Jungle",
+                        "artistName": "Creedence Clearwater Revival",
+                        "albumName": "Cosmo's Factory",
+                        "trackUri": "spotify:track:6J0AjzrYsPZrQtw6IjErhy"},
+              "addedDate": "2020-06-03"},
+             {"track": null, "episode": {"episodeName": "x"}, "addedDate": "2020-06-03"},
+             {"track": {"trackName": "Demo", "artistName": "Me", "albumName": null,
+                        "trackUri": null}, "addedDate": null}
+           ]},
+          {"name": "Only podcasts", "items": [{"track": null, "addedDate": null}]}
+        ]}"#;
+        let playlists = parse_playlists(json).unwrap();
+        assert_eq!(playlists.len(), 1);
+        let (track, added) = &playlists[0].tracks[0];
+        assert_eq!(playlists[0].tracks.len(), 1);
+        assert_eq!(
+            track.ids.get(Namespace::Spotify),
+            Some("6J0AjzrYsPZrQtw6IjErhy")
+        );
+        assert_eq!(track.album.as_deref(), Some("Cosmo's Factory"));
+        assert_eq!(*added, Some(jiff::civil::date(2020, 6, 3)));
+    }
+
+    #[test]
+    fn the_library_gives_saved_albums() {
+        let json = r#"{"tracks": [{"artist": "A", "album": "B", "track": "C",
+                                   "uri": "spotify:track:x"}],
+                       "albums": [{"artist": "Lil Nas X", "album": "MONTERO",
+                                   "uri": "spotify:album:6pOiDiuDQqrmo5DbG0ZubR"}],
+                       "shows": []}"#;
+        let albums = parse_library(json).unwrap();
+        assert_eq!(albums.len(), 1);
+        assert_eq!(albums[0].artist.name, "Lil Nas X");
+        assert_eq!(albums[0].title_key(), "montero");
+    }
+
+    #[test]
+    fn marquee_segments_become_familiarity() {
+        let json = r#"[
+          {"artistName": "Kanye West", "segment": "Super Listeners"},
+          {"artistName": "AC/DC", "segment": "Moderate listeners"},
+          {"artistName": "LSD", "segment": "Light listeners"},
+          {"artistName": "Andrew Garfield", "segment": "Previously Active Listeners"},
+          {"artistName": "Someone", "segment": "Brand New Segment"}
+        ]"#;
+        let levels: Vec<Familiarity> = parse_marquee(json)
+            .unwrap()
+            .into_iter()
+            .map(|(_, f)| f)
+            .collect();
+        assert_eq!(
+            levels,
+            vec![
+                Familiarity::Heavy,
+                Familiarity::Moderate,
+                Familiarity::Light,
+                Familiarity::Lapsed,
+                Familiarity::Unknown
+            ]
+        );
+    }
+
+    #[test]
+    fn reads_an_extracted_account_data_directory() {
+        let dir = std::env::temp_dir().join(format!("novelty-acct-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("StreamingHistory_music_0.json"), ACCOUNT).unwrap();
+        fs::write(dir.join("StreamingHistory_podcast_0.json"), "[]").unwrap();
+        fs::write(dir.join("Marquee.json"), "[]").unwrap();
+        fs::write(dir.join("Payments.json"), "{}").unwrap();
+        let export = read_export(&dir).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(export.listens.len(), 1);
+        assert_eq!(export.familiarity, Some(Vec::new()));
+        assert!(export.playlists.is_none() && export.saved_albums.is_none());
     }
 }

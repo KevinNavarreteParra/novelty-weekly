@@ -14,6 +14,9 @@
 //!
 //! A [`ColdStart`] is the stand-in for a listening history until one is
 //! imported: the service's rankings of what I play most, and my saved tracks.
+//! [`Heard`] is what I know apart from plays (saved, ranked, in a
+//! [`Playlist`], on a saved [`AlbumRef`], rated by [`Familiarity`]), and holds
+//! whatever the history covers.
 //!
 //! The model also names what the app decides: a [`Recommendation`] from a
 //! [`Pool`], credited to an [`Arm`], in one [`Week`]'s playlist.
@@ -25,6 +28,7 @@ mod catalog;
 mod cold_start;
 mod ids;
 mod knowledge;
+mod library;
 mod listen;
 pub mod names;
 mod recommendation;
@@ -35,6 +39,7 @@ pub use ids::{ArtistId, ExternalIds, Namespace, TrackId};
 pub use knowledge::{
     ArtistTag, ArtistTags, PopularTrack, PopularTracks, SimilarArtist, SimilarityGraph,
 };
+pub use library::{AlbumRef, Familiarity, Heard, Playlist};
 pub use listen::{
     COMPLETE_AFTER_MS, Ending, IDLE_SLACK_MS, Listen, Play, Provenance, SKIP_BEFORE_MS, StartedBy,
     Verdict, judge, played_since_previous,
@@ -98,6 +103,9 @@ mod tests {
         }
         for p in Provenance::ALL {
             assert_eq!(Provenance::parse(p.as_str()), Some(*p));
+        }
+        for f in Familiarity::ALL {
+            assert_eq!(Familiarity::parse(f.as_str()), Some(*f));
         }
         for n in Namespace::ALL {
             assert_eq!(Namespace::parse(n.as_str()), Some(*n));
