@@ -182,6 +182,11 @@ impl Profile {
         self.known.contains(&artist)
     }
 
+    /// Every artist I have heard.
+    pub fn known_artists(&self) -> impl Iterator<Item = ArtistId> + '_ {
+        self.known.iter().copied()
+    }
+
     /// Artists I like, best first.
     pub fn ranked_artists(&self) -> &[(ArtistId, f64)] {
         &self.ranked

@@ -42,6 +42,7 @@ pub fn report(store: &Store, tz: &TimeZone, weeks: usize, now: Timestamp) -> Res
         writeln!(out, "No playlists published yet.\n")?;
     } else {
         picks_section(&mut out, store, &shown, &ledger, &outcomes)?;
+        coverage_note(&mut out, store, &ledger, tz)?;
     }
 
     let streams = Streams::new(&plays, &ledger);
@@ -121,6 +122,35 @@ fn picks_section(
         out,
         "(spread: entropy of the picks' dominant tags; log2(40) = 5.3 b would be a different \
          tag for every pick)\n"
+    )?;
+    Ok(())
+}
+
+/// Which picks are judged only from polling. The feed never shows listens
+/// under 30 s, so a pick skipped that fast reads as unplayed until an export
+/// covering it is imported.
+fn coverage_note(
+    out: &mut String,
+    store: &Store,
+    ledger: &[Recommendation],
+    tz: &TimeZone,
+) -> Result<()> {
+    let end = store.history_end()?;
+    let polled_only = ledger
+        .iter()
+        .filter(|r| end.is_none_or(|e| r.published_at > e))
+        .count();
+    if polled_only == 0 {
+        return Ok(());
+    }
+    let since = match end {
+        Some(e) => format!("after the last export ({})", e.to_zoned(tz.clone()).date()),
+        None => "with no export imported".to_owned(),
+    };
+    writeln!(
+        out,
+        "{polled_only} picks were published {since}, so only polling has seen them: a skip in\n\
+         the first 30 s reads as unplayed. Importing a newer Spotify export corrects that.\n"
     )?;
     Ok(())
 }

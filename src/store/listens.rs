@@ -9,8 +9,13 @@ use rusqlite::params;
 
 use super::{Store, from_ms, parse_stored, to_ms};
 use crate::model::{
-    ArtistId, Ending, Listen, Play, Provenance, StartedBy, TrackId, played_since_previous,
+    ArtistId, Ending, Listen, Play, Provenance, SKIP_BEFORE_MS, StartedBy, TrackId,
+    played_since_previous,
 };
+
+/// Two streams of a track whose lengths differ by at most this much both
+/// played it to the end (see [`Store::plays`]).
+pub const AGREED_LENGTH_MS: i64 = 2_000;
 
 /// The setting that says polled plays are measured from the previous
 /// listen's end, because the feed's `played_at` is an end time. Plays polled
@@ -136,6 +141,24 @@ impl Store {
         latest.map(from_ms).transpose().map_err(Into::into)
     }
 
+    /// When the newest history export on file ends, if any: listens after it
+    /// are known only from polling.
+    pub fn history_end(&self) -> Result<Option<Timestamp>> {
+        let mut latest: Option<i64> = None;
+        for provenance in [Provenance::History, Provenance::BasicHistory] {
+            let end: Option<i64> = self.conn.query_row(
+                "SELECT MAX(started_at + COALESCE(ms_played, 0)) FROM plays WHERE provenance = ?1",
+                [provenance.as_str()],
+                |row| row.get(0),
+            )?;
+            if let Some(end) = end {
+                let end = end + provenance.end_uncertainty_ms();
+                latest = Some(latest.map_or(end, |l| l.max(end)));
+            }
+        }
+        latest.map(from_ms).transpose().map_err(Into::into)
+    }
+
     /// Re-measures plays polled before the feed's `played_at` was known to be
     /// an end time. Each one's stored start is really when it ended, and its
     /// `ms_played` was the gap to the next listen, which measures that one
@@ -217,15 +240,35 @@ impl Store {
     }
 
     /// Every play on file, oldest first.
+    ///
+    /// A play's `duration_ms` is its track's length. Where none is on file
+    /// (a basic export names tracks without one), the length two of the
+    /// track's streams agree on, within [`AGREED_LENGTH_MS`], stands in:
+    /// playing to the same moment twice is playing to the end. On tracks whose
+    /// length is known, that agreed length is within 3 s of it for 96%. The
+    /// stored length stays unknown.
     pub fn plays(&self) -> Result<Vec<Play>> {
         let mut stmt = self.conn.prepare(
-            "SELECT p.track_id, t.artist_id, p.started_at, p.ms_played, t.duration_ms,
+            "WITH ranked AS (
+                 SELECT p.track_id, p.ms_played,
+                        ROW_NUMBER() OVER (PARTITION BY p.track_id ORDER BY p.ms_played DESC) AS r
+                 FROM plays p JOIN tracks t USING (track_id)
+                 WHERE t.duration_ms IS NULL AND p.ms_played >= ?1),
+             agreed AS (
+                 SELECT track_id,
+                        MAX(CASE WHEN r = 1 THEN ms_played END) AS longest,
+                        MAX(CASE WHEN r = 2 THEN ms_played END) AS next
+                 FROM ranked WHERE r <= 2 GROUP BY track_id)
+             SELECT p.track_id, t.artist_id, p.started_at, p.ms_played,
+                    COALESCE(t.duration_ms,
+                             CASE WHEN a.longest - a.next <= ?2 THEN a.longest END),
                     p.ending, p.started_by
              FROM plays p JOIN tracks t USING (track_id)
+             LEFT JOIN agreed a USING (track_id)
              ORDER BY p.started_at",
         )?;
         let plays = stmt
-            .query_map([], |row| {
+            .query_map(params![SKIP_BEFORE_MS, AGREED_LENGTH_MS], |row| {
                 Ok(Play {
                     track: TrackId(row.get(0)?),
                     artist: ArtistId(row.get(1)?),
@@ -457,5 +500,55 @@ mod tests {
         // Recorded as measured, so a second open leaves them be.
         s.ensure_polls_measured_from_end().unwrap();
         assert_eq!(s.plays().unwrap()[0].started_at.as_second(), 800);
+    }
+
+    #[test]
+    fn two_streams_that_agree_stand_in_for_an_unknown_length() {
+        let s = Store::open_in_memory().unwrap();
+        let basic = |title: &str, at_s: i64, ms: u32| {
+            listen(title, at_s, Some(ms), Provenance::BasicHistory)
+        };
+        s.import_history(&[
+            basic("Short Song", 1_000, 100_000),
+            basic("Short Song", 2_000, 100_900),
+            basic("Short Song", 3_000, 40_000),
+            basic("Once", 4_000, 90_000),
+            basic("Never Agreed", 5_000, 60_000),
+            basic("Never Agreed", 6_000, 90_000),
+        ])
+        .unwrap();
+        let plays = s.plays().unwrap();
+        let lengths: Vec<Option<u32>> = plays.iter().map(|p| p.duration_ms).collect();
+        assert_eq!(
+            lengths,
+            vec![
+                Some(100_900),
+                Some(100_900),
+                Some(100_900),
+                None,
+                None,
+                None
+            ]
+        );
+        assert_eq!(plays[0].verdict(), Some(crate::model::Verdict::Completed));
+        assert_eq!(plays[2].verdict(), Some(crate::model::Verdict::Partial));
+        // The stored length is still unknown.
+        let short = s
+            .resolve_track(&TrackRef::new("Short Song", ArtistRef::named("Artist")))
+            .unwrap();
+        assert!(s.durations([short]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_history_ends_where_its_last_listen_does() {
+        let s = Store::open_in_memory().unwrap();
+        assert_eq!(s.history_end().unwrap(), None);
+        s.record_listens(&[listen("polled", 9_000, Some(1_000), Provenance::Poll)])
+            .unwrap();
+        assert_eq!(s.history_end().unwrap(), None);
+        s.import_history(&[listen("A", 100, Some(60_000), Provenance::BasicHistory)])
+            .unwrap();
+        let end = Timestamp::from_millisecond(160_000 + 59_999).unwrap();
+        assert_eq!(s.history_end().unwrap(), Some(end));
     }
 }

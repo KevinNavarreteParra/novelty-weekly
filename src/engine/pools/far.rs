@@ -53,6 +53,7 @@ pub const SEED_TAGS: &[&str] = &[
     "old time",
     "zydeco",
     "dancehall",
+    "jungle",
 ];
 
 /// How sharply tag sampling favors what I rarely hear.
@@ -75,7 +76,16 @@ impl Default for TagSampling {
 
 /// The tags to sample from: any tag on at least `min_artists` known artists,
 /// plus [`SEED_TAGS`].
-pub fn tag_universe(tags: &ArtistTags, min_artists: usize) -> Vec<String> {
+///
+/// A tag that is the name of an artist I know (`artist_names`, in
+/// `model::names::tag_key` form) is left out: "kanye west" on other artists
+/// says who they sound like, and its chart is Kanye-adjacent acts, not a
+/// genre. A seed tag stays even when a band shares its name ("jungle").
+pub fn tag_universe(
+    tags: &ArtistTags,
+    min_artists: usize,
+    artist_names: &HashSet<String>,
+) -> Vec<String> {
     let mut artists_per_tag: HashMap<&str, usize> = HashMap::new();
     for artist_tags in tags.values() {
         for tag in artist_tags {
@@ -84,7 +94,7 @@ pub fn tag_universe(tags: &ArtistTags, min_artists: usize) -> Vec<String> {
     }
     let mut universe: Vec<String> = artists_per_tag
         .into_iter()
-        .filter(|(_, n)| *n >= min_artists)
+        .filter(|(tag, n)| *n >= min_artists && !artist_names.contains(*tag))
         .map(|(tag, _)| tag.to_owned())
         .chain(SEED_TAGS.iter().map(|t| (*t).to_owned()))
         .collect();
@@ -275,10 +285,26 @@ mod tests {
             ),
             (ArtistId(2), vec![ArtistTag::new("shoegaze", 1.0)]),
         ]);
-        let universe = tag_universe(&tags, 2);
+        let universe = tag_universe(&tags, 2, &HashSet::new());
         assert!(universe.contains(&"shoegaze".to_owned()));
         assert!(!universe.contains(&"seen live".to_owned()));
         assert!(universe.contains(&"gamelan".to_owned()));
+    }
+
+    #[test]
+    fn a_tag_naming_an_artist_i_know_is_not_a_genre() {
+        let tagged = |tag: &str| vec![ArtistTag::new(tag, 1.0), ArtistTag::new("jungle", 0.5)];
+        let tags = HashMap::from([
+            (ArtistId(1), tagged("kanye west")),
+            (ArtistId(2), tagged("kanye west")),
+        ]);
+        let known: HashSet<String> = ["kanye west", "jungle"].map(str::to_owned).into();
+        let universe = tag_universe(&tags, 2, &known);
+        assert!(!universe.contains(&"kanye west".to_owned()));
+        assert!(
+            universe.contains(&"jungle".to_owned()),
+            "a seed outranks a band name"
+        );
     }
 
     #[test]

@@ -382,7 +382,17 @@ fn far_candidates<K: Knowledge>(
         .map(|(a, _)| *a)
         .collect();
     let shares = tag_shares(profile, &gather.tags(&liked)?);
-    let universe = far::tag_universe(&gather.store.tags(None)?, TAG_UNIVERSE_MIN_ARTISTS);
+    let known_names: HashSet<String> = gather
+        .store
+        .artist_names(profile.known_artists())?
+        .into_values()
+        .map(|name| tag_key(&name))
+        .collect();
+    let universe = far::tag_universe(
+        &gather.store.tags(None)?,
+        TAG_UNIVERSE_MIN_ARTISTS,
+        &known_names,
+    );
     let skip = params.far_skip_top_ranks;
     for tag in far::sample_tags(&universe, &shares, FAR_TAGS, TagSampling::default(), rng) {
         let chart = match gather.tag_chart(&tag, skip..skip + FAR_CHART_DEPTH) {
