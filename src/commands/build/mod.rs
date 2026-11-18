@@ -3,6 +3,8 @@
 //! [`build`] runs these steps in order, each one a call into the engine with
 //! what the step before produced:
 //!
+//! 0. **Tidy**: stored tags the knowledge source no longer counts as music
+//!    are dropped.
 //! 1. **Profile**: taste, exposure and seeds, from every play, plus the cold
 //!    start until a history export is imported. Saved and ranked tracks, my
 //!    playlists, saved albums and the artists Spotify rates my listening of
@@ -198,6 +200,12 @@ pub fn build(
         bail!("{week} is already published; preview with --dry-run");
     }
     let gather = Gather { store, knowledge };
+
+    // 0. Tidy what's on file, before any step holds store IDs.
+    let dropped = store.drop_tags(knowledge.source(), |t| knowledge.describes_music(t))?;
+    if dropped > 0 {
+        info!("dropped {dropped} stored tags that don't describe music");
+    }
 
     // 1. Profile.
     let plays = store.plays()?;

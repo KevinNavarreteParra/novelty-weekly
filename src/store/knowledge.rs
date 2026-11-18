@@ -60,6 +60,26 @@ impl Store {
         Ok(graph)
     }
 
+    /// Drops every stored tag from `source` that `keep` rejects; returns how
+    /// many artist tags went.
+    pub fn drop_tags(&self, source: &str, keep: impl Fn(&str) -> bool) -> Result<usize> {
+        let tags: Vec<String> = self
+            .conn
+            .prepare("SELECT DISTINCT tag FROM artist_tags WHERE source = ?1")?
+            .query_map([source], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let tx = self.conn.unchecked_transaction()?;
+        let mut dropped = 0;
+        for tag in tags.iter().filter(|t| !keep(t)) {
+            dropped += self.conn.execute(
+                "DELETE FROM artist_tags WHERE source = ?1 AND tag = ?2",
+                params![source, tag],
+            )?;
+        }
+        tx.commit()?;
+        Ok(dropped)
+    }
+
     pub fn record_tags(&self, artist: ArtistId, source: &str, tags: &[ArtistTag]) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         self.conn.execute(
@@ -250,5 +270,27 @@ mod tests {
         s.set_listeners(a, Some(1234)).unwrap();
         let known = s.listeners(&[a, b]).unwrap();
         assert_eq!(known, HashMap::from([(a, 1234)]));
+    }
+
+    #[test]
+    fn tags_a_source_no_longer_counts_are_dropped() {
+        let s = Store::open_in_memory().unwrap();
+        let a = s.resolve_artist(&ArtistRef::named("A")).unwrap();
+        s.record_tags(
+            a,
+            "lastfm",
+            &[
+                ArtistTag::new("Dream Pop", 1.0),
+                ArtistTag::new("female vocalists", 0.9),
+            ],
+        )
+        .unwrap();
+        let dropped = s.drop_tags("lastfm", |t| t != "female vocalists").unwrap();
+        assert_eq!(dropped, 1);
+        let tags: Vec<String> = s.tags(None).unwrap()[&a]
+            .iter()
+            .map(|t| t.tag.clone())
+            .collect();
+        assert_eq!(tags, vec!["dream pop"]);
     }
 }
