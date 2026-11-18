@@ -7,4 +7,5 @@
 *.db
 *.db-*
 *.zip
+/spotify_data/
 /data/
