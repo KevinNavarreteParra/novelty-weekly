@@ -141,6 +141,24 @@ impl Store {
         latest.map(from_ms).transpose().map_err(Into::into)
     }
 
+    /// When the newest history export on file ends, if any: listens after it
+    /// are known only from polling.
+    pub fn history_end(&self) -> Result<Option<Timestamp>> {
+        let mut latest: Option<i64> = None;
+        for provenance in [Provenance::History, Provenance::BasicHistory] {
+            let end: Option<i64> = self.conn.query_row(
+                "SELECT MAX(started_at + COALESCE(ms_played, 0)) FROM plays WHERE provenance = ?1",
+                [provenance.as_str()],
+                |row| row.get(0),
+            )?;
+            if let Some(end) = end {
+                let end = end + provenance.end_uncertainty_ms();
+                latest = Some(latest.map_or(end, |l| l.max(end)));
+            }
+        }
+        latest.map(from_ms).transpose().map_err(Into::into)
+    }
+
     /// Re-measures plays polled before the feed's `played_at` was known to be
     /// an end time. Each one's stored start is really when it ended, and its
     /// `ms_played` was the gap to the next listen, which measures that one
@@ -519,5 +537,18 @@ mod tests {
             .resolve_track(&TrackRef::new("Short Song", ArtistRef::named("Artist")))
             .unwrap();
         assert!(s.durations([short]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_history_ends_where_its_last_listen_does() {
+        let s = Store::open_in_memory().unwrap();
+        assert_eq!(s.history_end().unwrap(), None);
+        s.record_listens(&[listen("polled", 9_000, Some(1_000), Provenance::Poll)])
+            .unwrap();
+        assert_eq!(s.history_end().unwrap(), None);
+        s.import_history(&[listen("A", 100, Some(60_000), Provenance::BasicHistory)])
+            .unwrap();
+        let end = Timestamp::from_millisecond(160_000 + 59_999).unwrap();
+        assert_eq!(s.history_end().unwrap(), Some(end));
     }
 }
