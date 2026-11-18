@@ -1,8 +1,9 @@
 //! Splitting the playlist's slots across pools (spec §7.4 step 1).
 //!
 //! Each pool's success rate is a Beta posterior. A Thompson draw from each
-//! gives raw shares; projecting those onto `[floor, cap]` guarantees the bandit
-//! can tilt toward what works but never abandon a pool.
+//! gives raw shares; projecting those onto each pool's `[floor, cap]`
+//! guarantees the bandit can tilt toward what works but never abandon a pool,
+//! nor let rediscovery crowd out novelty.
 
 use std::collections::BTreeMap;
 
@@ -43,14 +44,27 @@ pub struct ShareBounds {
     pub cap: f64,
 }
 
-/// How many of `k` slots each pool gets this week.
+impl ShareBounds {
+    /// No bounds at all, for a pool given none.
+    pub const ANY: ShareBounds = ShareBounds {
+        floor: 0.0,
+        cap: 1.0,
+    };
+}
+
+/// How many of `k` slots each pool in `posteriors` gets this week. A pool
+/// missing from `bounds` is unbounded.
 pub fn allocate(
     k: usize,
     posteriors: &BTreeMap<Pool, Posterior>,
-    bounds: ShareBounds,
+    bounds: &BTreeMap<Pool, ShareBounds>,
     rng: &mut impl Rng,
 ) -> BTreeMap<Pool, usize> {
     let pools: Vec<Pool> = posteriors.keys().copied().collect();
+    let bounds: Vec<ShareBounds> = pools
+        .iter()
+        .map(|p| bounds.get(p).copied().unwrap_or(ShareBounds::ANY))
+        .collect();
     let draws: Vec<f64> = posteriors.values().map(|p| p.sample(rng)).collect();
     let total: f64 = draws.iter().sum();
     let raw: Vec<f64> = if total > 0.0 {
@@ -58,31 +72,47 @@ pub fn allocate(
     } else {
         vec![1.0 / pools.len() as f64; pools.len()]
     };
-    let shares = project(&raw, bounds);
+    let shares = project(&raw, &bounds);
     pools.into_iter().zip(round_to_total(&shares, k)).collect()
 }
 
 /// The closest shares to `raw` (shifting all by one amount) that sum to 1 with
-/// each inside the bounds. Bounds that can't hold for this many pools are
-/// widened just enough to be satisfiable.
-pub fn project(raw: &[f64], bounds: ShareBounds) -> Vec<f64> {
-    let n = raw.len() as f64;
-    let floor = bounds.floor.min(1.0 / n);
-    let cap = bounds.cap.max(1.0 / n);
-    let filled = |shift: f64| -> f64 { raw.iter().map(|s| (s + shift).clamp(floor, cap)).sum() };
+/// each inside its own bounds. Bounds that can't hold together (floors over
+/// 1, caps under 1) are scaled just enough to be satisfiable.
+pub fn project(raw: &[f64], bounds: &[ShareBounds]) -> Vec<f64> {
+    let floors: f64 = bounds.iter().map(|b| b.floor).sum();
+    let caps: f64 = bounds.iter().map(|b| b.cap).sum();
+    let floor_scale = if floors > 1.0 { 1.0 / floors } else { 1.0 };
+    let cap_scale = if caps < 1.0 { 1.0 / caps } else { 1.0 };
+    let lo: Vec<f64> = bounds.iter().map(|b| b.floor * floor_scale).collect();
+    let hi: Vec<f64> = bounds
+        .iter()
+        .zip(&lo)
+        .map(|(b, lo)| (b.cap * cap_scale).max(*lo))
+        .collect();
+    let clamp = |i: usize, s: f64| s.clamp(lo[i], hi[i]);
+    let filled = |shift: f64| -> f64 {
+        raw.iter()
+            .enumerate()
+            .map(|(i, s)| clamp(i, s + shift))
+            .sum()
+    };
 
     // filled() rises with shift, from n·floor ≤ 1 at -1 to n·cap ≥ 1 at +1;
     // bisect for the shift where it reaches exactly 1.
-    let (mut lo, mut hi) = (-1.0, 1.0);
+    let (mut below, mut above) = (-1.0, 1.0);
     for _ in 0..100 {
-        let mid = (lo + hi) / 2.0;
+        let mid = (below + above) / 2.0;
         if filled(mid) < 1.0 {
-            lo = mid
+            below = mid
         } else {
-            hi = mid
+            above = mid
         }
     }
-    raw.iter().map(|s| (s + hi).clamp(floor, cap)).collect()
+    raw.iter()
+        .enumerate()
+        .map(|(i, s)| clamp(i, s + above))
+        .collect()
 }
 
 /// Whole slot counts summing to `k`, by largest remainder.
@@ -120,18 +150,24 @@ mod tests {
 
     #[test]
     fn shares_already_in_bounds_are_unchanged() {
-        assert_close(&project(&[0.3, 0.3, 0.4], BOUNDS), &[0.3, 0.3, 0.4]);
+        assert_close(&project(&[0.3, 0.3, 0.4], &[BOUNDS; 3]), &[0.3, 0.3, 0.4]);
     }
 
     #[test]
     fn a_dominant_pool_is_capped_and_the_excess_shared_equally() {
         // 0.9 caps at 0.5; the other two rise by the same 0.2.
-        assert_close(&project(&[0.9, 0.08, 0.02], BOUNDS), &[0.5, 0.28, 0.22]);
+        assert_close(
+            &project(&[0.9, 0.08, 0.02], &[BOUNDS; 3]),
+            &[0.5, 0.28, 0.22],
+        );
     }
 
     #[test]
     fn a_starved_pool_is_lifted_to_the_floor() {
-        assert_close(&project(&[0.5, 0.45, 0.05], BOUNDS), &[0.425, 0.375, 0.2]);
+        assert_close(
+            &project(&[0.5, 0.45, 0.05], &[BOUNDS; 3]),
+            &[0.425, 0.375, 0.2],
+        );
     }
 
     #[test]
@@ -141,7 +177,7 @@ mod tests {
             let raw: Vec<f64> = (0..3).map(|_| rng.random::<f64>()).collect();
             let total: f64 = raw.iter().sum();
             let raw: Vec<f64> = raw.iter().map(|r| r / total).collect();
-            let shares = project(&raw, BOUNDS);
+            let shares = project(&raw, &[BOUNDS; 3]);
             assert!((shares.iter().sum::<f64>() - 1.0).abs() < 1e-9);
             assert!(shares.iter().all(|s| (0.2 - 1e-9..=0.5 + 1e-9).contains(s)));
         }
@@ -154,7 +190,7 @@ mod tests {
             floor: 0.2,
             cap: 0.3,
         };
-        assert_close(&project(&[0.9, 0.1], tight), &[0.5, 0.5]);
+        assert_close(&project(&[0.9, 0.1], &[tight; 2]), &[0.5, 0.5]);
     }
 
     #[test]
@@ -182,11 +218,25 @@ mod tests {
                 },
             ),
         ]);
+        let bounds = Pool::ALL.iter().map(|p| (*p, BOUNDS)).collect();
         let mut rng = StdRng::seed_from_u64(9);
         for _ in 0..100 {
-            let slots = allocate(40, &posteriors, BOUNDS, &mut rng);
+            let slots = allocate(40, &posteriors, &bounds, &mut rng);
             assert_eq!(slots.values().sum::<usize>(), 40);
             assert!(slots.values().all(|&n| (8..=20).contains(&n)), "{slots:?}");
         }
+    }
+
+    #[test]
+    fn each_pool_keeps_its_own_bounds() {
+        // Rediscovery is held to [0.05, 0.15] however well it does.
+        let rediscover = ShareBounds {
+            floor: 0.05,
+            cap: 0.15,
+        };
+        let shares = project(&[0.2, 0.2, 0.6], &[BOUNDS, BOUNDS, rediscover]);
+        assert_close(&shares, &[0.425, 0.425, 0.15]);
+        let shares = project(&[0.5, 0.5, 0.0], &[BOUNDS, BOUNDS, rediscover]);
+        assert_close(&shares, &[0.475, 0.475, 0.05]);
     }
 }

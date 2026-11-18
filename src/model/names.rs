@@ -39,6 +39,29 @@ const CREDIT_WORDS: &[&str] = &["feat", "ft", "featuring", "with"];
 /// matching sources that drop the apostrophe.
 const APOSTROPHES: [char; 4] = ['\'', '\u{2019}', '\u{2018}', '`'];
 
+/// Names that stand in for "no particular artist": compilations credited to
+/// "Various Artists" (in a few languages), and "Unknown Artist". They say
+/// nothing about anyone's music.
+const PLACEHOLDER_ARTISTS: &[&str] = &[
+    "various artists",
+    "various",
+    "va",
+    "v a",
+    "verschiedene interpreten",
+    "varios artistas",
+    "varios",
+    "varios interpretes",
+    "artistes varies",
+    "artisti vari",
+    "unknown artist",
+];
+
+/// Whether `name` is a placeholder rather than an artist (see
+/// `PLACEHOLDER_ARTISTS`).
+pub fn is_placeholder_artist(name: &str) -> bool {
+    PLACEHOLDER_ARTISTS.contains(&name_key(name).as_str())
+}
+
 /// Lowercase, without accents, letters and digits only, single spaces; "&"
 /// reads as "and" and a "$" in a word as "s". So "Alejandra Guzmán" is
 /// "Alejandra Guzman", and "Travi$ Scott" is "Travis Scott".
@@ -223,5 +246,21 @@ mod tests {
     fn tag_key_merges_spelling_variants() {
         assert_eq!(tag_key("Hip-Hop"), "hip hop");
         assert_eq!(tag_key("  dub   techno "), "dub techno");
+    }
+
+    #[test]
+    fn compilations_are_by_no_particular_artist() {
+        for name in [
+            "Various Artists",
+            "VARIOUS ARTISTS",
+            "V.A.",
+            "Varios Artistas",
+            "Unknown Artist",
+        ] {
+            assert!(is_placeholder_artist(name), "{name}");
+        }
+        for name in ["Various Cruelties", "The Various", "Vince Staples"] {
+            assert!(!is_placeholder_artist(name), "{name}");
+        }
     }
 }

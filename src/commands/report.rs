@@ -81,8 +81,8 @@ fn picks_section(
     )?;
     writeln!(
         out,
-        "{:<9} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:<13} {:>6}",
-        "week", "picks", "played", "completed", "skipped", "kept", "deep/near/far", "spread"
+        "{:<9} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:<20} {:>6}",
+        "week", "picks", "played", "completed", "skipped", "kept", "deep/near/far/redisc", "spread"
     )?;
     for week in weeks {
         let mut stats = PickStats::default();
@@ -103,7 +103,7 @@ fn picks_section(
             .map_or_else(|| "–".to_owned(), |bits| format!("{bits:.1} b"));
         writeln!(
             out,
-            "{:<9} {}  {split:<13} {spread:>6}",
+            "{:<9} {}  {split:<20} {spread:>6}",
             week.to_string(),
             cells(&stats)
         )?;

@@ -118,7 +118,8 @@ impl Default for MusicBrainzConfig {
 pub struct BuildConfig {
     /// Playlist size.
     pub k: usize,
-    /// Every pool gets at least this share of the playlist...
+    /// Each novelty pool (deep, near, far) gets at least this share of the
+    /// playlist...
     pub pool_floor: f64,
     /// ...and at most this share.
     pub pool_cap: f64,
@@ -137,6 +138,13 @@ pub struct BuildConfig {
     pub far_skip_top_ranks: usize,
     /// IANA zone that decides which ISO week a build belongs to.
     pub timezone: String,
+    /// The rediscover pool's share of the playlist: at least this...
+    pub rediscover_floor: f64,
+    /// ...and at most this, so novelty keeps the rest.
+    pub rediscover_cap: f64,
+    /// An artist is lapsed after this many days without a stream. Spec §13
+    /// suggests 2 to 3 years; the account data reaches back one.
+    pub rediscover_lapse_days: u32,
 }
 
 impl Default for BuildConfig {
@@ -152,6 +160,9 @@ impl Default for BuildConfig {
             popularity_gamma: 0.5,
             far_skip_top_ranks: 20,
             timezone: "America/Los_Angeles".into(),
+            rediscover_floor: 0.05,
+            rediscover_cap: 0.15,
+            rediscover_lapse_days: 365,
         }
     }
 }
@@ -205,6 +216,11 @@ mod tests {
         let defaults = Config::default();
         assert_eq!(example.build.k, defaults.build.k);
         assert_eq!(example.build.timezone, defaults.build.timezone);
+        assert_eq!(example.build.rediscover_cap, defaults.build.rediscover_cap);
+        assert_eq!(
+            example.build.rediscover_lapse_days,
+            defaults.build.rediscover_lapse_days
+        );
         assert_eq!(example.blocklist.tags, defaults.blocklist.tags);
     }
 

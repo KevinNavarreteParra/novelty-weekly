@@ -269,6 +269,7 @@ mod tests {
         let played = |ms, saved, replays| Outcome {
             first_play: Some(stream(1, 1, 0, ms)),
             replays,
+            returns: 0,
             saved,
         };
         let mut stats = PickStats::default();
@@ -279,6 +280,7 @@ mod tests {
             Outcome {
                 first_play: None,
                 replays: 0,
+                returns: 0,
                 saved: false,
             },
         ] {

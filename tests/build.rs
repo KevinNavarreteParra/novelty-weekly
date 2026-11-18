@@ -213,6 +213,7 @@ fn params(dry_run: bool) -> BuildParams {
         blocked_artists: Vec::new(),
         blocked_tags: Vec::new(),
         playlist_name: "Novelty Weekly".into(),
+        rediscover_lapse_days: 365,
     }
 }
 
@@ -367,9 +368,10 @@ fn an_unknown_artist_from_the_service_is_skipped_not_fatal() {
         &mut StdRng::seed_from_u64(3),
     )
     .unwrap();
-    // No deep candidates at all; near and far backfill the playlist.
+    // No deep candidates at all: deep takes no share, and the others fill it.
     assert_eq!(built.picks.len(), K);
-    assert!(built.shortfall.contains_key(&novelty::model::Pool::Deep));
+    assert!(!built.planned.contains_key(&Pool::Deep));
+    assert!(built.picks.iter().all(|(c, _, _)| c.pool != Pool::Deep));
 }
 
 /// A Spotify account with no history export yet: "Liked 0" and "Liked 1"
@@ -618,4 +620,141 @@ fn the_report_covers_published_picks_and_listening() {
         "nothing played yet: {text}"
     );
     assert!(text.contains("Listening by month"), "{text}");
+}
+
+/// The history also reaches back past the lapse: "Lapsed 0" was last
+/// streamed 400 days ago and two of their songs are saved; Spotify rates me a
+/// lapsed listener of "Lapsed 1", with nothing saved.
+fn store_with_lapsed_artists() -> Store {
+    let store = store_with_history();
+    let long_ago = now() - SignedDuration::from_hours(24 * 400);
+    let lapsed_track = |t: usize| {
+        TrackRef::new(
+            format!("Lapsed 0 old song {t}"),
+            ArtistRef::named("Lapsed 0"),
+        )
+    };
+    store
+        .import_history(&[Listen {
+            track: lapsed_track(0),
+            started_at: long_ago,
+            ms_played: Some(200_000),
+            ending: Ending::Finished,
+            started_by: StartedBy::Listener,
+            provenance: Provenance::History,
+        }])
+        .unwrap();
+    store
+        .record_saved(&[(lapsed_track(0), long_ago), (lapsed_track(1), long_ago)])
+        .unwrap();
+    store
+        .record_familiarity(
+            "spotify",
+            &[(ArtistRef::named("Lapsed 1"), Familiarity::Lapsed)],
+        )
+        .unwrap();
+    store
+}
+
+#[test]
+fn lapsed_artists_come_back_within_their_share_and_then_rest() {
+    let store = store_with_lapsed_artists();
+    let mut service = FakeService::default();
+    let mut rng = StdRng::seed_from_u64(21);
+    let mut with_rediscovery = params(false);
+    with_rediscovery.select = with_rediscovery.select.with_bounds(
+        Pool::Rediscover,
+        ShareBounds {
+            floor: 0.05,
+            cap: 0.15,
+        },
+    );
+    let built = build(
+        &store,
+        &FakeKnowledge,
+        &mut service,
+        &with_rediscovery,
+        now(),
+        &mut rng,
+    )
+    .unwrap();
+    let rediscovered: Vec<&TrackRef> = built
+        .picks
+        .iter()
+        .filter(|(c, _, _)| c.pool == Pool::Rediscover)
+        .map(|(_, t, _)| t)
+        .collect();
+    assert_eq!(built.picks.len(), K);
+    assert!(!rediscovered.is_empty(), "the lapsed artists come back");
+    assert!(
+        rediscovered.len() <= 2,
+        "within 15% of {K}: {rediscovered:?}"
+    );
+    for track in &rediscovered {
+        assert!(
+            track.artist.name.starts_with("Lapsed"),
+            "{}",
+            track.artist.name
+        );
+    }
+    let why: Vec<&String> = built
+        .picks
+        .iter()
+        .filter(|(c, _, _)| c.pool == Pool::Rediscover)
+        .map(|(_, _, why)| why)
+        .collect();
+    assert!(
+        why.iter().all(|w| w.contains("back from a lapse")),
+        "{why:?}"
+    );
+
+    // Next week the artists just rediscovered rest; any rediscovery is another.
+    let first: HashSet<String> = rediscovered.iter().map(|t| t.artist.name.clone()).collect();
+    let next_week = now() + SignedDuration::from_hours(24 * 7);
+    let again = build(
+        &store,
+        &FakeKnowledge,
+        &mut service,
+        &with_rediscovery,
+        next_week,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(again.picks.len(), K);
+    for (c, track, _) in &again.picks {
+        if c.pool == Pool::Rediscover {
+            assert!(
+                !first.contains(&track.artist.name),
+                "{} didn't rest",
+                track.artist.name
+            );
+        }
+    }
+}
+
+#[test]
+fn no_rediscovery_until_the_history_reaches_past_the_lapse() {
+    // Everything on file is from the last few days.
+    let store = store_with_history();
+    store
+        .record_familiarity(
+            "spotify",
+            &[(ArtistRef::named("Lapsed 1"), Familiarity::Lapsed)],
+        )
+        .unwrap();
+    let built = build(
+        &store,
+        &FakeKnowledge,
+        &mut FakeService::default(),
+        &params(true),
+        now(),
+        &mut StdRng::seed_from_u64(5),
+    )
+    .unwrap();
+    assert!(
+        built
+            .picks
+            .iter()
+            .all(|(c, _, _)| c.pool != Pool::Rediscover)
+    );
 }

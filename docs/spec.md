@@ -54,6 +54,26 @@ on purpose:
   list), and keeps the merged name as an alias of the artist kept.
 - **Far tags (§7.2):** a tag that names an artist I know ("kanye west" on Kanye-adjacent
   acts) isn't sampled: its chart is a neighborhood, not a genre. Seed tags always stay.
+- **Rediscover (§13, v4) comes before a full history.** An artist is lapsed when I have
+  evidence I liked them (saved tracks or albums, playlists, a Marquee rating, streams) and
+  no stream for `rediscover_lapse_days`. That defaults to 365 rather than the spec's 2 to
+  3 years, since the account data reaches back one year. The pool waits until the history
+  reaches past the lapse. Marquee's own "previously active" isn't the test: 427 of its 769
+  lapsed artists were streamed this year.
+  - Ranking: `ln(1 + fondness)`, where fondness counts saved tracks, playlist entries, 2 per
+    saved album, 0.2 per stream and the Marquee rating (heavy 4, moderate 2, lapsed 1,
+    light 0.5). An artist needs at least 1. The fondest 40, plus 20 drawn from the rest,
+    are considered each week.
+  - Picks: each artist leads, at random, with a song I loved or one of their popular tracks
+    I haven't heard (skipping their biggest), one track per artist. An artist rests 8 weeks
+    after being picked. Streaming them again ends the lapse, so they leave the pool.
+  - Share: its own bounds, 5 to 15%, so novelty keeps at least 85%. Backfill lifts the
+    novelty pools' caps before rediscovery's. A pool with no candidates (deep, for now)
+    takes no share at all.
+  - Reward: the usual, plus 0.25 per organic stream of the artist's other songs within 30
+    days of the first listen (at most 1.0): back in rotation is the win.
+  - "Never recommended" still holds, so a loved song comes back once. The v4 familiar pool,
+    with cooldowns instead, is not built.
 - **Deep cuts wait for the full history (§7.2):** one year of history says too little about
   which of a liked artist's tracks I've heard, so the deep pool stays off until an Extended
   Streaming History export is imported. The account data still replaces the cold start for

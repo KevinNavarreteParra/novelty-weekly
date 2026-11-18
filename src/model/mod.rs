@@ -39,7 +39,7 @@ pub use ids::{ArtistId, ExternalIds, Namespace, TrackId};
 pub use knowledge::{
     ArtistTag, ArtistTags, PopularTrack, PopularTracks, SimilarArtist, SimilarityGraph,
 };
-pub use library::{AlbumRef, Familiarity, Heard, Playlist};
+pub use library::{AlbumRef, Familiarity, Heard, LapsedArtist, Playlist};
 pub use listen::{
     COMPLETE_AFTER_MS, Ending, IDLE_SLACK_MS, Listen, Play, Provenance, SKIP_BEFORE_MS, StartedBy,
     Verdict, judge, played_since_previous,
@@ -81,8 +81,9 @@ macro_rules! stored_enum {
         }
 
         impl std::fmt::Display for $name {
+            /// Honours width and alignment, so `{:<10}` lines columns up.
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(self.as_str())
+                f.pad(self.as_str())
             }
         }
     };
@@ -107,6 +108,7 @@ mod tests {
         for f in Familiarity::ALL {
             assert_eq!(Familiarity::parse(f.as_str()), Some(*f));
         }
+        assert_eq!(format!("[{:<6}]", Pool::Far), "[far   ]");
         for n in Namespace::ALL {
             assert_eq!(Namespace::parse(n.as_str()), Some(*n));
         }

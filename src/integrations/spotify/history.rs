@@ -22,6 +22,7 @@ use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
 
+use crate::model::names::is_placeholder_artist;
 use crate::model::{
     AlbumRef, ArtistRef, Ending, ExternalIds, Familiarity, Listen, Namespace, Playlist, Provenance,
     StartedBy, TrackRef,
@@ -184,7 +185,7 @@ pub fn parse_account(json: &str) -> Result<Vec<Listen>> {
     for row in rows {
         if row.artist_name.trim().is_empty()
             || row.track_name.trim().is_empty()
-            || (row.artist_name == "Unknown Artist" && row.track_name == "Unknown Track")
+            || is_placeholder_artist(&row.artist_name)
         {
             continue;
         }
@@ -275,7 +276,8 @@ pub fn parse_playlists(json: &str) -> Result<Vec<Playlist>> {
     Ok(playlists)
 }
 
-/// The saved albums in `YourLibrary.json`. Its saved tracks are left out:
+/// The saved albums in `YourLibrary.json`, except compilations credited to
+/// "Various Artists", which name no artist. Its saved tracks are left out:
 /// the API's copy carries when each was saved, and `cold-start` and every
 /// build read that.
 pub fn parse_library(json: &str) -> Result<Vec<AlbumRef>> {
@@ -293,6 +295,7 @@ pub fn parse_library(json: &str) -> Result<Vec<AlbumRef>> {
     Ok(file
         .albums
         .into_iter()
+        .filter(|a| !is_placeholder_artist(&a.artist))
         .map(|a| AlbumRef {
             title: a.album,
             artist: ArtistRef::named(a.artist),
@@ -564,7 +567,9 @@ mod tests {
         let json = r#"{"tracks": [{"artist": "A", "album": "B", "track": "C",
                                    "uri": "spotify:track:x"}],
                        "albums": [{"artist": "Lil Nas X", "album": "MONTERO",
-                                   "uri": "spotify:album:6pOiDiuDQqrmo5DbG0ZubR"}],
+                                   "uri": "spotify:album:6pOiDiuDQqrmo5DbG0ZubR"},
+                                  {"artist": "Various Artists", "album": "Hits 2020",
+                                   "uri": "spotify:album:x"}],
                        "shows": []}"#;
         let albums = parse_library(json).unwrap();
         assert_eq!(albums.len(), 1);

@@ -12,7 +12,8 @@ use super::ids::{ArtistId, TrackId};
 use super::stored_enum;
 
 stored_enum! {
-    /// The three kinds of novelty a playlist mixes (spec §7.2).
+    /// The kinds of pick a playlist mixes: three kinds of novelty (spec §7.2)
+    /// and, deliberately not novel, rediscovery (spec §13, v4).
     pub enum Pool {
         /// Unheard tracks by artists I already like.
         Deep => "deep",
@@ -20,6 +21,17 @@ stored_enum! {
         Near => "near",
         /// Unheard artists in territory I barely listen to.
         Far => "far",
+        /// Artists I loved and stopped playing: a song I loved, or one of
+        /// theirs I never kept.
+        Rediscover => "rediscover",
+    }
+}
+
+impl Pool {
+    /// Whether the pool's picks are new to me (spec G1). Rediscovery relaxes
+    /// "never played" on purpose; "never recommended" still holds.
+    pub fn is_novel(self) -> bool {
+        self != Pool::Rediscover
     }
 }
 

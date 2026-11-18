@@ -1,13 +1,17 @@
 //! Choosing the playlist from every pool's candidates (spec §7.4).
 //!
-//! 1. [`allocate`] splits the `k` slots across pools by Thompson sampling.
+//! 1. [`allocate`] splits the `k` slots by Thompson sampling across the pools
+//!    with candidates this week, each within its own share bounds.
 //! 2. Each pool fills its slots greedily by MMR: the most relevant candidate
 //!    that is least like what the pool already picked.
-//! 3. Global caps apply throughout: one track per new artist, two per known
-//!    artist, and no dominant tag over a quarter of the playlist.
-//! 4. Slots a pool can't fill pass to the others (backfill). If that still
-//!    leaves slots empty, a last pass lifts the tag cap (never the artist
-//!    caps): the caps shape the playlist, they don't shrink it.
+//! 3. Global caps apply throughout: one track per new or rediscovered
+//!    artist, two per other known artist, and no dominant tag over a quarter
+//!    of the playlist.
+//! 4. Slots a pool can't fill pass to the others (backfill): first up to each
+//!    pool's share cap, then past the novelty pools' caps, then past
+//!    rediscovery's. If that still leaves slots empty, a last pass lifts the
+//!    tag cap (never the artist caps): the caps shape the playlist, they
+//!    don't shrink it.
 //! 5. [`order::interleave`] arranges the result.
 
 pub mod allocate;
@@ -26,7 +30,8 @@ use crate::model::{ArtistId, ArtistTag, ArtistTags, Pool, TrackId};
 pub struct SelectParams {
     /// Playlist size.
     pub k: usize,
-    pub bounds: ShareBounds,
+    /// Each pool's share of the playlist; a pool not listed is unbounded.
+    pub bounds: BTreeMap<Pool, ShareBounds>,
     /// MMR weight on relevance; the rest goes to being unlike earlier picks.
     pub mmr_lambda: f64,
     /// How deep into a pool's ranking MMR may reach, as a multiple of its slots.
@@ -35,20 +40,34 @@ pub struct SelectParams {
     pub max_tag_share: f64,
     pub per_new_artist: u32,
     pub per_known_artist: u32,
+    pub per_rediscovered_artist: u32,
 }
 
 impl SelectParams {
-    /// The spec's fixed choices, with the tunable ones supplied.
+    /// The spec's fixed choices, with the tunable ones supplied. Every pool
+    /// gets `bounds`; [`with_bounds`](Self::with_bounds) sets one apart.
     pub fn new(k: usize, bounds: ShareBounds, mmr_lambda: f64) -> Self {
         SelectParams {
             k,
-            bounds,
+            bounds: Pool::ALL.iter().map(|p| (*p, bounds)).collect(),
             mmr_lambda,
             mmr_window: 4,
             max_tag_share: 0.25,
             per_new_artist: 1,
             per_known_artist: 2,
+            per_rediscovered_artist: 1,
         }
+    }
+
+    pub fn with_bounds(mut self, pool: Pool, bounds: ShareBounds) -> Self {
+        self.bounds.insert(pool, bounds);
+        self
+    }
+
+    /// The most slots `pool` takes before backfill has nowhere else to go.
+    fn cap_slots(&self, pool: Pool) -> usize {
+        let cap = self.bounds.get(&pool).map_or(1.0, |b| b.cap);
+        (cap * self.k as f64).ceil() as usize
     }
 }
 
@@ -74,8 +93,15 @@ pub fn select(
     params: &SelectParams,
     rng: &mut impl Rng,
 ) -> Selection {
-    let planned = allocate::allocate(params.k, posteriors, params.bounds, rng);
     let mut ranked = rank_by_pool(candidates);
+    // A pool with nothing to offer this week takes no share: its floor would
+    // only pass to the others, past their caps.
+    let offering: BTreeMap<Pool, Posterior> = posteriors
+        .iter()
+        .filter(|(pool, _)| ranked.get(pool).is_some_and(|c| !c.is_empty()))
+        .map(|(pool, belief)| (*pool, *belief))
+        .collect();
+    let planned = allocate::allocate(params.k, &offering, &params.bounds, rng);
     let mut state = Picked::new(tags, profile, params);
     let mut picks: BTreeMap<Pool, Vec<Candidate>> = BTreeMap::new();
 
@@ -96,11 +122,30 @@ pub fn select(
         .collect();
 
     let mut missing: usize = shortfall.values().sum();
-    missing = backfill(&mut state, &mut ranked, &mut picks, &planned, missing);
+    let caps: BTreeMap<Pool, usize> = planned
+        .iter()
+        .map(|(pool, slots)| (*pool, params.cap_slots(*pool).max(*slots)))
+        .collect();
+    // Caps give way novelty first, so rediscovery passes its cap only when
+    // nothing new is left to offer.
+    let rediscovery_capped: BTreeMap<Pool, usize> = caps
+        .iter()
+        .map(|(pool, cap)| (*pool, if pool.is_novel() { usize::MAX } else { *cap }))
+        .collect();
+    for pass_caps in [Some(&caps), Some(&rediscovery_capped), None] {
+        missing = backfill(
+            &mut state,
+            &mut ranked,
+            &mut picks,
+            &planned,
+            missing,
+            pass_caps,
+        );
+    }
     let tag_cap_relaxed = missing > 0;
     if tag_cap_relaxed {
         state.relax_tag_cap = true;
-        backfill(&mut state, &mut ranked, &mut picks, &planned, missing);
+        backfill(&mut state, &mut ranked, &mut picks, &planned, missing, None);
     }
 
     Selection {
@@ -111,14 +156,15 @@ pub fn select(
     }
 }
 
-/// Hands `missing` slots round-robin to pools with candidates left. Returns
-/// how many stay empty.
+/// Hands `missing` slots round-robin to pools with candidates left, none past
+/// its entry in `caps` when given. Returns how many stay empty.
 fn backfill(
     state: &mut Picked,
     ranked: &mut BTreeMap<Pool, Vec<Candidate>>,
     picks: &mut BTreeMap<Pool, Vec<Candidate>>,
     planned: &BTreeMap<Pool, usize>,
     mut missing: usize,
+    caps: Option<&BTreeMap<Pool, usize>>,
 ) -> usize {
     while missing > 0 {
         let mut progressed = false;
@@ -127,6 +173,9 @@ fn backfill(
                 break;
             }
             let pool_picks = picks.entry(pool).or_default();
+            if caps.is_some_and(|c| pool_picks.len() >= c[&pool]) {
+                continue;
+            }
             if let Some(pick) = state.best_next(ranked.get_mut(&pool), pool_picks, slots.max(1)) {
                 pool_picks.push(pick);
                 missing -= 1;
@@ -222,7 +271,9 @@ impl<'a> Picked<'a> {
         if self.tracks.contains(&c.track) {
             return false;
         }
-        let artist_limit = if self.profile.knows(c.artist) {
+        let artist_limit = if c.pool == Pool::Rediscover {
+            self.params.per_rediscovered_artist
+        } else if self.profile.knows(c.artist) {
             self.params.per_known_artist
         } else {
             self.params.per_new_artist
@@ -405,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_pool_is_backfilled_by_the_others() {
+    fn a_pool_with_nothing_to_offer_takes_no_share() {
         let candidates: Vec<Candidate> = plenty()
             .into_iter()
             .filter(|c| c.pool != Pool::Far)
@@ -419,8 +470,65 @@ mod tests {
             &mut StdRng::seed_from_u64(1),
         );
         assert_eq!(sel.picks.len(), 40);
-        assert!(sel.shortfall[&Pool::Far] >= 8);
+        assert!(!sel.planned.contains_key(&Pool::Far));
         assert!(sel.picks.iter().all(|c| c.pool != Pool::Far));
+    }
+
+    #[test]
+    fn backfill_keeps_rediscovery_within_its_cap_while_novelty_can_fill() {
+        // Near can fill only 3 of its slots; far and rediscover have plenty.
+        let mut near_left = 3;
+        let candidates: Vec<Candidate> = plenty()
+            .into_iter()
+            .filter(|c| c.pool != Pool::Deep)
+            .filter(|c| {
+                if c.pool != Pool::Near {
+                    return true;
+                }
+                near_left -= 1;
+                near_left >= 0
+            })
+            .collect();
+        let bounded = params(40).with_bounds(
+            Pool::Rediscover,
+            ShareBounds {
+                floor: 0.05,
+                cap: 0.15,
+            },
+        );
+        let sel = select(
+            candidates,
+            &posteriors(),
+            &ArtistTags::new(),
+            &Profile::default(),
+            &bounded,
+            &mut StdRng::seed_from_u64(4),
+        );
+        let count = |pool| sel.picks.iter().filter(|c| c.pool == pool).count();
+        assert_eq!(sel.picks.len(), 40);
+        assert_eq!(count(Pool::Near), 3);
+        assert!(count(Pool::Rediscover) <= 6, "{}", count(Pool::Rediscover));
+        assert_eq!(count(Pool::Far) + count(Pool::Rediscover), 37);
+    }
+
+    #[test]
+    fn one_track_per_rediscovered_artist() {
+        let candidates: Vec<Candidate> = (0..10)
+            .map(|i| candidate(Pool::Rediscover, 500 + i, 7, 1.0 - i as f64 / 20.0))
+            .chain((0..10).map(|i| candidate(Pool::Rediscover, 600 + i, 8 + i, 0.5)))
+            .collect();
+        let only = BTreeMap::from([(Pool::Rediscover, Posterior::PRIOR)]);
+        let sel = select(
+            candidates,
+            &only,
+            &ArtistTags::new(),
+            &Profile::default(),
+            &SelectParams::new(5, ShareBounds::ANY, 0.6),
+            &mut StdRng::seed_from_u64(2),
+        );
+        let by_seven = sel.picks.iter().filter(|c| c.artist == ArtistId(7)).count();
+        assert_eq!(sel.picks.len(), 5);
+        assert_eq!(by_seven, 1);
     }
 
     #[test]
