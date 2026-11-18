@@ -21,7 +21,12 @@ on purpose:
   span, and polling never starts before the end of the history. Start times from the two
   sources never match exactly, so a UNIQUE key can't dedupe them.
 - **Completion (§6):** skipping during the last 20% of a track of known length counts as
-  completing it.
+  completing it. A track with no length on file (a basic export names tracks without one)
+  is judged by the length two of its streams agree on, within 2 s, which on tracks of known
+  length lands within 3 s for 96%. The stored length stays unknown.
+- **Organic replays (§9.1):** a replay earns its bonus only when it was neither a skip nor
+  autoplayed. Who started a listen is unknown outside a full history export, so
+  "listener-started" can't be required; a playlist looping back still counts.
 - **Tag cap (§7.4):** when the 25% dominant-tag cap would leave slots empty, a final
   backfill pass lifts it. Artist caps never lift.
 - **Secrets (§11.2):** the Spotify client ID and Last.fm key come from the environment
@@ -47,12 +52,15 @@ on purpose:
   one-track-per-artist cap missed them. Each build first merges two artists when one's name
   contains the other's and their popular tracks share at least 5 songs (half the shorter
   list), and keeps the merged name as an alias of the artist kept.
+- **Far tags (§7.2):** a tag that names an artist I know ("kanye west" on Kanye-adjacent
+  acts) isn't sampled: its chart is a neighborhood, not a genre. Seed tags always stay.
 - **Deep cuts wait for the full history (§7.2):** one year of history says too little about
   which of a liked artist's tracks I've heard, so the deep pool stays off until an Extended
   Streaming History export is imported. The account data still replaces the cold start for
   taste.
 - **Report (§10):** listening metrics count streams of 30 s or more, since the poller can't
-  see shorter ones. Text only so far; tag entropy of total listening is not computed (it
+  see shorter ones. It says how many picks only polling has seen, since a skip in their
+  first 30 s reads as unplayed until a newer export is imported. Text only so far; tag entropy of total listening is not computed (it
   would need tags for every artist I've played).
 - **Cold start (§5.3):** `novelty cold-start` stores Spotify's top-artist and top-track
   rankings (about a month, six months and a year) and the whole saved library as they
