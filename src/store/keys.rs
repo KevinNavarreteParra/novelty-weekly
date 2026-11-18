@@ -92,7 +92,32 @@ impl Store {
             }
         }
         self.rekey_saved_albums()?;
+        self.rekey_aliases()?;
         Ok((merged_artists, merged_tracks))
+    }
+
+    /// Aliases are keyed like names. One whose new key is an artist's own
+    /// name now resolves to that artist directly, so it goes.
+    fn rekey_aliases(&self) -> Result<()> {
+        let aliases: Vec<(String, String)> = self
+            .conn
+            .prepare("SELECT name_key, name FROM artist_aliases")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (old_key, name) in aliases {
+            let key = name_key(&name);
+            if key != old_key {
+                self.conn.execute(
+                    "UPDATE OR REPLACE artist_aliases SET name_key = ?2 WHERE name_key = ?1",
+                    params![old_key, key],
+                )?;
+            }
+        }
+        self.conn.execute(
+            "DELETE FROM artist_aliases WHERE name_key IN (SELECT name_key FROM artists)",
+            [],
+        )?;
+        Ok(())
     }
 
     /// Saved albums are keyed like titles; two that now share a key are one.
@@ -149,6 +174,7 @@ impl Store {
             ("ledger", "artist_id"),
             ("saved_albums", "artist_id"),
             ("artist_familiarity", "artist_id"),
+            ("artist_aliases", "artist_id"),
         ] {
             self.conn.execute(
                 &format!("UPDATE OR IGNORE {table} SET {column} = ?1 WHERE {column} = ?2"),

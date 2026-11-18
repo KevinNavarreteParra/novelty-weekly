@@ -26,7 +26,11 @@ use rusqlite::Connection;
 /// Schema versions, applied in order. `PRAGMA user_version` records how many a
 /// database has had. A live database has applied them, so a change is a new
 /// version, never an edit to an applied one.
-const MIGRATIONS: &[&str] = &[include_str!("schema.sql"), include_str!("schema_v2.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("schema.sql"),
+    include_str!("schema_v2.sql"),
+    include_str!("schema_v3.sql"),
+];
 
 pub struct Store {
     conn: Connection,

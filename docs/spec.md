@@ -42,6 +42,11 @@ on purpose:
 - **Heard apart from plays (§7.3):** saved and ranked tracks, tracks in my playlists, and
   artists of saved albums or with a Marquee rating count as heard in every build, not
   only during the cold start. A track on a saved album counts as heard for deep cuts.
+- **One act under two names (§14):** Last.fm keeps some acts on two pages ("Marina" and
+  "Marina & the Diamonds", "S Club 7" and "S Club"), and the two never share an ID, so the
+  one-track-per-artist cap missed them. Each build first merges two artists when one's name
+  contains the other's and their popular tracks share at least 5 songs (half the shorter
+  list), and keeps the merged name as an alias of the artist kept.
 - **Deep cuts wait for the full history (§7.2):** one year of history says too little about
   which of a liked artist's tracks I've heard, so the deep pool stays off until an Extended
   Streaming History export is imported. The account data still replaces the cold start for

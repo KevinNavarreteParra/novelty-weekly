@@ -4,7 +4,7 @@
 //! what the step before produced:
 //!
 //! 0. **Tidy**: stored tags the knowledge source no longer counts as music
-//!    are dropped.
+//!    are dropped, and one act stored under two names becomes one artist.
 //! 1. **Profile**: taste, exposure and seeds, from every play, plus the cold
 //!    start until a history export is imported. Saved and ranked tracks, my
 //!    playlists, saved albums and the artists Spotify rates my listening of
@@ -205,6 +205,9 @@ pub fn build(
     let dropped = store.drop_tags(knowledge.source(), |t| knowledge.describes_music(t))?;
     if dropped > 0 {
         info!("dropped {dropped} stored tags that don't describe music");
+    }
+    for (kept, merged) in store.merge_artists_sharing_songs()? {
+        info!("one artist under two names: {merged:?} is now {kept:?}");
     }
 
     // 1. Profile.
