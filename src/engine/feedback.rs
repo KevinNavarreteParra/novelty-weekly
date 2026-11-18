@@ -12,7 +12,7 @@ use jiff::Timestamp;
 
 use super::select::allocate::Posterior;
 use crate::model::{
-    Arm, COMPLETE_AFTER_MS, Play, Pool, Recommendation, SKIP_BEFORE_MS, TrackId, Verdict,
+    Arm, COMPLETE_AFTER_MS, Play, Pool, Recommendation, SKIP_BEFORE_MS, StartedBy, TrackId, Verdict,
 };
 
 const MS_PER_DAY: i64 = 86_400_000;
@@ -27,7 +27,8 @@ const MAX_REPLAY_BONUS: f64 = 1.0;
 pub struct Outcome {
     /// The first listen since publishing, if any.
     pub first_play: Option<Play>,
-    /// Further listens within 30 days of the first.
+    /// Further listens within 30 days of the first that were my choice to
+    /// hear again (see [`is_organic_replay`]).
     pub replays: u32,
     /// Saved to the library since publishing.
     pub saved: bool,
@@ -62,6 +63,7 @@ pub fn outcomes(
                 after[1..]
                     .iter()
                     .filter(|p| p.started_at.as_millisecond() <= window_end)
+                    .filter(|p| is_organic_replay(p))
                     .count() as u32
             });
             Outcome {
@@ -73,6 +75,16 @@ pub fn outcomes(
             }
         })
         .collect()
+}
+
+/// Whether a later listen of a pick says I wanted to hear it again (spec
+/// §9.1's "organic" replay): it was neither a skip nor still unmeasured, and
+/// the service didn't autoplay it. Who started it is mostly unknown (only a
+/// full history export says), so a listener-started rule would never fire.
+/// A playlist that loops back to a pick still counts; nothing says it did.
+pub fn is_organic_replay(play: &Play) -> bool {
+    matches!(play.verdict(), Some(Verdict::Completed | Verdict::Partial))
+        && play.started_by != StartedBy::Autoplay
 }
 
 /// What an outcome teaches the bandit. `base` is in `[0, 1]`; `bonus` only
@@ -207,6 +219,20 @@ mod tests {
             play(1, 50, Some(200_000), Ending::Finished),
         ];
         assert_eq!(outcome_of(&plays, false).replays, 2);
+    }
+
+    #[test]
+    fn only_organic_replays_count() {
+        let mut autoplayed = play(1, 14, Some(200_000), Ending::Finished);
+        autoplayed.started_by = StartedBy::Autoplay;
+        let plays = [
+            play(1, 11, Some(200_000), Ending::Finished),
+            play(1, 12, Some(2_000), Ending::Skipped),
+            play(1, 13, None, Ending::Unknown),
+            autoplayed,
+            play(1, 15, Some(90_000), Ending::Interrupted),
+        ];
+        assert_eq!(outcome_of(&plays, false).replays, 1, "only the partial one");
     }
 
     #[test]
