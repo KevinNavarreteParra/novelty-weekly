@@ -1,6 +1,7 @@
 //! Which Last.fm tags describe the music. Folksonomy tags also describe the
-//! listener ("seen live") and where the artist is from ("usa"); neither is a
-//! sound, and a place spans every genre, so both are dropped.
+//! listener ("seen live"), where the artist is from ("usa") and who sings
+//! ("female vocalists"). None of those is a sound, and a place or a voice
+//! spans every genre, so all three are dropped.
 //!
 //! Lists are in `model::names::tag_key` form.
 
@@ -29,6 +30,25 @@ const LISTENER_TAGS: &[&str] = &[
     "good",
     "cool",
     "best",
+];
+
+/// Tags that describe the singer, not the music: the far pool's "female"
+/// chart put country, Bollywood and indie pop side by side.
+const VOICE_TAGS: &[&str] = &[
+    "female",
+    "male",
+    "female vocalists",
+    "female vocalist",
+    "male vocalists",
+    "male vocalist",
+    "female voices",
+    "male voices",
+    "female singer",
+    "male singer",
+    "female fronted",
+    "female rapper",
+    "female rappers",
+    "male rapper",
 ];
 
 /// Countries, nationalities, regions and cities.
@@ -167,7 +187,12 @@ const PLACE_TAGS: &[&str] = &[
 /// Whether a tag says something about the artist's music. `artist_key` is
 /// the artist's `name_key`: an artist tagged with its own name says nothing.
 pub fn describes_music(tag: &str, artist_key: &str) -> bool {
-    !LISTENER_TAGS.contains(&tag) && !PLACE_TAGS.contains(&tag) && name_key(tag) != artist_key
+    is_musical(tag) && name_key(tag) != artist_key
+}
+
+/// Whether a tag can describe music at all, whoever carries it.
+pub fn is_musical(tag: &str) -> bool {
+    !LISTENER_TAGS.contains(&tag) && !PLACE_TAGS.contains(&tag) && !VOICE_TAGS.contains(&tag)
 }
 
 #[cfg(test)]
@@ -176,7 +201,14 @@ mod tests {
 
     #[test]
     fn places_and_listener_notes_are_not_sounds() {
-        for tag in ["united states", "colombian", "puerto rico", "my top songs"] {
+        for tag in [
+            "united states",
+            "colombian",
+            "puerto rico",
+            "my top songs",
+            "female",
+            "female vocalists",
+        ] {
             assert!(!describes_music(tag, "kany garcia"), "{tag}");
         }
         for tag in ["latin pop", "west coast hip hop", "neo soul", "j pop"] {

@@ -175,6 +175,10 @@ impl Knowledge for LastFm {
         chart.truncate(ranks.len() + start);
         Ok(chart.split_off(start))
     }
+
+    fn describes_music(&self, tag: &str) -> bool {
+        tags::is_musical(tag)
+    }
 }
 
 /// Look an artist up by MBID when known (unambiguous), else by name with

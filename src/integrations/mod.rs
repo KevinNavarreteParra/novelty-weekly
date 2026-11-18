@@ -94,4 +94,11 @@ pub trait Knowledge {
     /// The artists most associated with a tag, at chart positions `ranks`
     /// (0 is the top).
     fn tag_chart(&self, tag: &str, ranks: Range<usize>) -> Result<Vec<ArtistRef>>;
+
+    /// Whether this source still counts `tag` as describing music. Its rules
+    /// can tighten after tags were stored; each build drops stored tags the
+    /// source no longer counts.
+    fn describes_music(&self, _tag: &str) -> bool {
+        true
+    }
 }

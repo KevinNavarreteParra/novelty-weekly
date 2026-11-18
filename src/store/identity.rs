@@ -12,13 +12,26 @@
 //! The other direction, from store IDs back to refs an integration can look
 //! up, is here too.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
 
 use super::Store;
 use crate::model::{ArtistId, ArtistRef, ExternalIds, Namespace, TrackId, TrackRef};
+
+/// Two artists whose names overlap are one when their popular tracks share
+/// at least this many songs (see [`Store::merge_artists_sharing_songs`]).
+pub const ALIAS_MIN_SHARED: i64 = 5;
+
+/// Whether one name key's words appear, in order and together, in the other's:
+/// "marina" in "marina and the diamonds", "the four seasons" in "frankie
+/// valli and the four seasons".
+fn one_name_holds_the_other(a: &str, b: &str) -> bool {
+    let (a, b): (Vec<&str>, Vec<&str>) = (a.split(' ').collect(), b.split(' ').collect());
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    !short.is_empty() && long.windows(short.len()).any(|w| w == short.as_slice())
+}
 
 /// Where one kind of entity keeps its external IDs.
 struct IdTable {
@@ -56,9 +69,17 @@ impl Store {
         Ok(TrackId(id))
     }
 
-    /// The artist with this name key, created if new.
+    /// The artist with this name key, or that goes by it, created if new.
     fn artist_by_key(&self, artist: &ArtistRef) -> Result<i64> {
         let key = artist.key();
+        let alias: Option<i64> = self
+            .conn
+            .prepare_cached("SELECT artist_id FROM artist_aliases WHERE name_key = ?1")?
+            .query_row([&key], |row| row.get(0))
+            .optional()?;
+        if let Some(id) = alias {
+            return Ok(id);
+        }
         self.conn
             .prepare_cached(
                 "INSERT INTO artists (name, name_key) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
@@ -170,6 +191,87 @@ impl Store {
             .execute("DELETE FROM tracks WHERE track_id = ?1", [duplicate.0])?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Merges artists that are one act under two names. Last.fm keeps some
+    /// acts on two pages ("Marina" and "Marina & the Diamonds", "S Club 7" and
+    /// "S Club"), and a duo is its first-credited artist. Two artists are one
+    /// when one's name contains the other's, word for word, and their popular
+    /// tracks share at least [`ALIAS_MIN_SHARED`] songs, at least half of the
+    /// shorter list. The one played more, else the older, keeps its name.
+    ///
+    /// Run it only while no store IDs are held elsewhere: it deletes the
+    /// merged artist and its duplicate songs. Returns `(kept, merged)` names.
+    pub fn merge_artists_sharing_songs(&self) -> Result<Vec<(String, String)>> {
+        let mut merged = Vec::new();
+        loop {
+            let pairs: Vec<(i64, String, i64, String)> = self
+                .conn
+                .prepare_cached(
+                    "WITH songs AS (
+                         SELECT DISTINCT p.artist_id AS artist, t.title_key AS song
+                         FROM popular_tracks p JOIN tracks t USING (track_id)),
+                     sizes AS (SELECT artist, COUNT(*) AS n FROM songs GROUP BY artist),
+                     pairs AS (
+                         SELECT x.artist AS a, y.artist AS b, COUNT(*) AS shared
+                         FROM songs x JOIN songs y ON x.song = y.song AND x.artist < y.artist
+                         GROUP BY x.artist, y.artist HAVING COUNT(*) >= ?1)
+                     SELECT pairs.a, aa.name_key, pairs.b, bb.name_key
+                     FROM pairs
+                     JOIN sizes sa ON sa.artist = pairs.a
+                     JOIN sizes sb ON sb.artist = pairs.b
+                     JOIN artists aa ON aa.artist_id = pairs.a
+                     JOIN artists bb ON bb.artist_id = pairs.b
+                     WHERE 2 * pairs.shared >= MIN(sa.n, sb.n)
+                     ORDER BY pairs.shared DESC, pairs.a, pairs.b",
+                )?
+                .query_map([ALIAS_MIN_SHARED], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            let mut touched = HashSet::new();
+            let before = merged.len();
+            for (a, a_key, b, b_key) in pairs {
+                if touched.contains(&a)
+                    || touched.contains(&b)
+                    || !one_name_holds_the_other(&a_key, &b_key)
+                {
+                    continue;
+                }
+                let (keep, gone) = if self.play_count(b)? > self.play_count(a)? {
+                    (b, a)
+                } else {
+                    (a, b)
+                };
+                let names = (
+                    self.artist_ref(ArtistId(keep))?.name,
+                    self.artist_ref(ArtistId(gone))?.name,
+                );
+                self.merge_artist_into(ArtistId(keep), ArtistId(gone))?;
+                // Sources still use the other name; it should find this artist.
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO artist_aliases (name_key, name, artist_id)
+                     VALUES (?1, ?2, ?3)",
+                    params![if keep == a { &b_key } else { &a_key }, names.1, keep],
+                )?;
+                touched.extend([a, b]);
+                merged.push(names);
+            }
+            // A merge can make a new pair (an artist with two aliases).
+            if merged.len() == before {
+                return Ok(merged);
+            }
+        }
+    }
+
+    fn play_count(&self, artist: i64) -> Result<i64> {
+        let n = self
+            .conn
+            .prepare_cached(
+                "SELECT COUNT(*) FROM plays p JOIN tracks t USING (track_id) WHERE t.artist_id = ?1",
+            )?
+            .query_row([artist], |row| row.get(0))?;
+        Ok(n)
     }
 
     /// An artist as integrations know it: its name and every external ID.
@@ -387,5 +489,100 @@ mod tests {
         original.artist.ids.insert(Namespace::Spotify, "ar1");
         let id = s.resolve_track(&original).unwrap();
         assert_eq!(s.track_ref(id).unwrap(), original);
+    }
+
+    fn record_hits(s: &Store, artist: &str, titles: &[&str]) -> ArtistId {
+        let id = s.resolve_artist(&ArtistRef::named(artist)).unwrap();
+        let popular: Vec<crate::model::PopularTrack> = titles
+            .iter()
+            .map(|t| crate::model::PopularTrack {
+                track: track(t, artist),
+                listeners: None,
+            })
+            .collect();
+        s.record_popular(id, "lastfm", &popular).unwrap();
+        id
+    }
+
+    const HITS: &[&str] = &[
+        "I Am Not a Robot",
+        "Primadonna",
+        "Bubblegum Bitch",
+        "Oh No!",
+        "Hollywood",
+        "Froot",
+    ];
+
+    #[test]
+    fn one_act_under_two_names_becomes_one_artist() {
+        let s = store();
+        let marina = record_hits(&s, "Marina", HITS);
+        let legacy = record_hits(&s, "Marina & the Diamonds", &HITS[..5]);
+        let merged = s.merge_artists_sharing_songs().unwrap();
+        assert_eq!(
+            merged,
+            vec![("Marina".to_owned(), "Marina & the Diamonds".to_owned())]
+        );
+        assert_ne!(marina, legacy);
+        // The other name still finds the artist, so it isn't created again.
+        assert_eq!(
+            s.resolve_artist(&ArtistRef::named("Marina and the Diamonds"))
+                .unwrap(),
+            marina
+        );
+        let robot = s
+            .resolve_track(&track("I Am Not a Robot", "Marina"))
+            .unwrap();
+        let refs = s.track_ref(robot).unwrap();
+        assert_eq!(refs.artist.name, "Marina");
+        assert_eq!(s.popular(&[marina]).unwrap()[&marina].len(), HITS.len());
+        assert!(s.merge_artists_sharing_songs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_name_i_have_played_is_the_one_kept() {
+        let s = store();
+        record_hits(&s, "Marina", HITS);
+        record_hits(&s, "Marina & the Diamonds", HITS);
+        s.record_listens(&[crate::model::Listen {
+            track: track("Primadonna", "Marina & the Diamonds"),
+            started_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+            ms_played: Some(200_000),
+            ending: crate::model::Ending::Finished,
+            started_by: crate::model::StartedBy::Listener,
+            provenance: crate::model::Provenance::Poll,
+        }])
+        .unwrap();
+        let merged = s.merge_artists_sharing_songs().unwrap();
+        assert_eq!(merged[0].0, "Marina & the Diamonds");
+    }
+
+    #[test]
+    fn shared_hits_alone_or_a_shared_name_alone_is_not_enough() {
+        let s = store();
+        record_hits(&s, "Marina", HITS);
+        // A covers act sings the same songs under an unrelated name.
+        record_hits(&s, "Karaoke All Stars", HITS);
+        // A different Marina shares a word and two titles.
+        record_hits(
+            &s,
+            "Marina Kaye",
+            &["Froot", "Hollywood", "Homeless", "Freeze You Out"],
+        );
+        assert!(s.merge_artists_sharing_songs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn names_hold_each_other_word_for_word() {
+        assert!(one_name_holds_the_other(
+            "marina",
+            "marina and the diamonds"
+        ));
+        assert!(one_name_holds_the_other(
+            "frankie valli and the four seasons",
+            "the four seasons"
+        ));
+        assert!(!one_name_holds_the_other("marina", "supersubmarina"));
+        assert!(!one_name_holds_the_other("s club", "club s"));
     }
 }
