@@ -39,7 +39,7 @@ pub use ids::{ArtistId, ExternalIds, Namespace, TrackId};
 pub use knowledge::{
     ArtistTag, ArtistTags, PopularTrack, PopularTracks, SimilarArtist, SimilarityGraph,
 };
-pub use library::{AlbumRef, Familiarity, Heard, Playlist};
+pub use library::{AlbumRef, Familiarity, Heard, LapsedArtist, Playlist};
 pub use listen::{
     COMPLETE_AFTER_MS, Ending, IDLE_SLACK_MS, Listen, Play, Provenance, SKIP_BEFORE_MS, StartedBy,
     Verdict, judge, played_since_previous,

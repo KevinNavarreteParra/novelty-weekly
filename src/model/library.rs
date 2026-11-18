@@ -4,6 +4,7 @@
 
 use std::collections::HashSet;
 
+use jiff::Timestamp;
 use jiff::civil::Date;
 
 use super::catalog::{ArtistRef, TrackRef};
@@ -60,4 +61,21 @@ stored_enum! {
 pub struct Heard {
     pub tracks: HashSet<TrackId>,
     pub artists: HashSet<ArtistId>,
+}
+
+/// An artist I once liked and haven't streamed lately, with the evidence I
+/// liked them (spec §13, rediscover). Resolved to store IDs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LapsedArtist {
+    pub artist: ArtistId,
+    /// Their tracks in my library, in playlists I made, and their albums I saved.
+    pub saved: u32,
+    pub listed: u32,
+    pub albums: u32,
+    /// How much the listening service says I listen to them, if it rates them.
+    pub familiarity: Option<Familiarity>,
+    /// Streams of them on file, all before the lapse.
+    pub streams: u32,
+    /// When I last streamed them, if any stream is on file.
+    pub last_stream: Option<Timestamp>,
 }

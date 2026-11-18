@@ -4,7 +4,9 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::engine::candidate::{Candidate, Why};
-use crate::model::{ArtistId, Pool, TrackRef, Week};
+use jiff::tz::TimeZone;
+
+use crate::model::{ArtistId, LapsedArtist, Pool, TrackRef, Week};
 
 /// Every artist a set of candidates' rationales mention.
 pub fn mentioned_artists(picks: &[Candidate]) -> Vec<ArtistId> {
@@ -14,7 +16,7 @@ pub fn mentioned_artists(picks: &[Candidate]) -> Vec<ArtistId> {
         match &c.why {
             Why::SimilarTo(via) => artists.extend(via.iter().map(|(a, _)| *a)),
             Why::Walk(path) => artists.extend(path.iter().copied()),
-            Why::DeepCut { .. } | Why::RareTag { .. } => {}
+            Why::DeepCut { .. } | Why::RareTag { .. } | Why::Rediscover { .. } => {}
         }
     }
     artists.sort();
@@ -46,12 +48,47 @@ pub fn rationale(c: &Candidate, names: &HashMap<ArtistId, String>) -> String {
             let steps: Vec<&str> = path.iter().map(name).collect();
             format!("walked {}", steps.join(" → "))
         }
+        Why::Rediscover { loved, lapsed } => {
+            let song = if *loved {
+                "a song I loved"
+            } else {
+                "one of theirs I never kept"
+            };
+            format!("{song}, back from a lapse ({})", fondness_evidence(lapsed))
+        }
     }
 }
 
-/// The playlist description, e.g. "2026-W46 · deep 10 / near 18 / far 12".
+/// e.g. "2 saved, 7 in my playlists, Spotify: lapsed, last played 2025-12-01".
+fn fondness_evidence(l: &LapsedArtist) -> String {
+    let mut parts = Vec::new();
+    if l.saved > 0 {
+        parts.push(format!("{} saved", l.saved));
+    }
+    if l.listed > 0 {
+        parts.push(format!("{} in my playlists", l.listed));
+    }
+    if l.albums > 0 {
+        parts.push(format!("{} albums saved", l.albums));
+    }
+    if let Some(level) = l.familiarity {
+        parts.push(format!("Spotify: {level}"));
+    }
+    parts.push(match l.last_stream {
+        Some(at) => format!("last played {}", at.to_zoned(TimeZone::UTC).date()),
+        None => "no plays on file".to_owned(),
+    });
+    parts.join(", ")
+}
+
+/// The playlist description, e.g. "2026-W46 · deep 10 / near 18 / far 12",
+/// plus "/ rediscover 4" in a week that has any.
 pub fn description(week: Week, picks: &[Candidate]) -> String {
-    let mut counts: BTreeMap<Pool, usize> = Pool::ALL.iter().map(|p| (*p, 0)).collect();
+    let mut counts: BTreeMap<Pool, usize> = Pool::ALL
+        .iter()
+        .filter(|p| p.is_novel())
+        .map(|p| (*p, 0))
+        .collect();
     for c in picks {
         *counts.entry(c.pool).or_default() += 1;
     }
@@ -67,7 +104,7 @@ pub fn listing(picks: &[(Candidate, TrackRef, String)]) -> String {
     let mut out = String::new();
     for (i, (c, track, why)) in picks.iter().enumerate() {
         out.push_str(&format!(
-            "{:>2}. {:<4}  {} – {}\n      {why}\n",
+            "{:>2}. {:<10} {} – {}\n      {why}\n",
             i + 1,
             c.pool,
             track.artist.name,
@@ -122,6 +159,54 @@ mod tests {
         assert_eq!(
             description(week, &picks),
             "2026-W46 · deep 1 / near 0 / far 2"
+        );
+        let lapsed = LapsedArtist {
+            artist: ArtistId(1),
+            saved: 2,
+            listed: 0,
+            albums: 0,
+            familiarity: None,
+            streams: 0,
+            last_stream: None,
+        };
+        let with_rediscovery = [
+            candidate(Pool::Near, Why::SimilarTo(vec![])),
+            candidate(
+                Pool::Rediscover,
+                Why::Rediscover {
+                    loved: true,
+                    lapsed,
+                },
+            ),
+        ];
+        assert_eq!(
+            description(week, &with_rediscovery),
+            "2026-W46 · deep 0 / near 1 / far 0 / rediscover 1"
+        );
+    }
+
+    #[test]
+    fn a_rediscovery_says_what_i_loved_and_when_i_stopped() {
+        let lapsed = LapsedArtist {
+            artist: ArtistId(1),
+            saved: 2,
+            listed: 7,
+            albums: 0,
+            familiarity: Some(crate::model::Familiarity::Lapsed),
+            streams: 4,
+            last_stream: Some("2025-12-01T10:00:00Z".parse().unwrap()),
+        };
+        let c = candidate(
+            Pool::Rediscover,
+            Why::Rediscover {
+                loved: false,
+                lapsed,
+            },
+        );
+        assert_eq!(
+            rationale(&c, &HashMap::new()),
+            "one of theirs I never kept, back from a lapse (2 saved, 7 in my playlists, \
+             Spotify: lapsed, last played 2025-12-01)"
         );
     }
 }

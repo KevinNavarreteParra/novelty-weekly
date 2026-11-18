@@ -22,7 +22,7 @@ pub fn show(app: &App, week: Option<&str>) -> Result<()> {
         for (rec, outcome) in ledger.iter().zip(&outcomes).filter(|(r, _)| r.week == week) {
             let track = store.track_ref(rec.track)?;
             println!(
-                "{:>3}. {:<4} {:<10} {} – {}",
+                "{:>3}. {:<10} {:<10} {} – {}",
                 rec.position + 1,
                 rec.pool,
                 fate(outcome),

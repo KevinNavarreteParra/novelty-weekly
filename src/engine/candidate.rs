@@ -1,6 +1,6 @@
 //! A candidate: one track a pool proposes, with why it proposed it.
 
-use crate::model::{Arm, ArtistId, Pool, TrackId};
+use crate::model::{Arm, ArtistId, LapsedArtist, Pool, TrackId};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Candidate {
@@ -25,4 +25,7 @@ pub enum Why {
     RareTag { tag: String, share: f64 },
     /// Reached by walking similarity links from a seed, seed first.
     Walk(Vec<ArtistId>),
+    /// By an artist I stopped playing, with the evidence I liked them: a song
+    /// I loved (`loved`), or one of theirs I never kept.
+    Rediscover { loved: bool, lapsed: LapsedArtist },
 }

@@ -12,7 +12,8 @@ use jiff::Timestamp;
 
 use super::select::allocate::Posterior;
 use crate::model::{
-    Arm, COMPLETE_AFTER_MS, Play, Pool, Recommendation, SKIP_BEFORE_MS, StartedBy, TrackId, Verdict,
+    Arm, ArtistId, COMPLETE_AFTER_MS, Play, Pool, Recommendation, SKIP_BEFORE_MS, StartedBy,
+    TrackId, Verdict,
 };
 
 const MS_PER_DAY: i64 = 86_400_000;
@@ -21,6 +22,10 @@ const REPLAY_WINDOW_DAYS: i64 = 30;
 const SAVED_BONUS: f64 = 0.5;
 const REPLAY_BONUS: f64 = 0.25;
 const MAX_REPLAY_BONUS: f64 = 1.0;
+/// A rediscovered artist back in rotation (spec §13): each organic stream of
+/// their other songs within 30 days of the pick's first listen, up to a cap.
+const RETURN_BONUS: f64 = 0.25;
+const MAX_RETURN_BONUS: f64 = 1.0;
 
 /// What happened to one recommendation after it was published.
 #[derive(Debug, Clone, PartialEq)]
@@ -32,6 +37,9 @@ pub struct Outcome {
     pub replays: u32,
     /// Saved to the library since publishing.
     pub saved: bool,
+    /// For a rediscovery: organic streams of the artist's other songs within
+    /// 30 days of the first listen. Always 0 for the novelty pools.
+    pub returns: u32,
 }
 
 /// One outcome per recommendation, in the same order.
@@ -43,8 +51,10 @@ pub fn outcomes(
     saved: &HashMap<TrackId, Timestamp>,
 ) -> Vec<Outcome> {
     let mut plays_by_track: HashMap<TrackId, Vec<&Play>> = HashMap::new();
+    let mut plays_by_artist: HashMap<ArtistId, Vec<&Play>> = HashMap::new();
     for play in plays {
         plays_by_track.entry(play.track).or_default().push(play);
+        plays_by_artist.entry(play.artist).or_default().push(play);
     }
     recs.iter()
         .map(|rec| {
@@ -66,9 +76,25 @@ pub fn outcomes(
                     .filter(|p| is_organic_replay(p))
                     .count() as u32
             });
+            let returns = match (&first_play, rec.pool) {
+                (Some(first), Pool::Rediscover) => {
+                    let from = first.started_at.as_millisecond();
+                    let window_end = from + REPLAY_WINDOW_DAYS * MS_PER_DAY;
+                    plays_by_artist
+                        .get(&rec.artist)
+                        .into_iter()
+                        .flatten()
+                        .filter(|p| p.track != rec.track)
+                        .filter(|p| (from..=window_end).contains(&p.started_at.as_millisecond()))
+                        .filter(|p| is_organic_replay(p))
+                        .count() as u32
+                }
+                _ => 0,
+            };
             Outcome {
                 first_play,
                 replays,
+                returns,
                 saved: saved
                     .get(&rec.track)
                     .is_some_and(|at| *at >= rec.published_at),
@@ -113,10 +139,11 @@ pub fn reward(outcome: &Outcome) -> Option<Reward> {
         }
     };
     let replay_bonus = (REPLAY_BONUS * f64::from(outcome.replays)).min(MAX_REPLAY_BONUS);
+    let return_bonus = (RETURN_BONUS * f64::from(outcome.returns)).min(MAX_RETURN_BONUS);
     let saved_bonus = if outcome.saved { SAVED_BONUS } else { 0.0 };
     Some(Reward {
         base,
-        bonus: replay_bonus + saved_bonus,
+        bonus: replay_bonus + return_bonus + saved_bonus,
     })
 }
 
@@ -222,6 +249,24 @@ mod tests {
     }
 
     #[test]
+    fn a_rediscovered_artist_back_in_rotation_earns_a_bonus() {
+        let other = |track, day| play(track, day, Some(200_000), Ending::Finished);
+        let plays = [
+            other(1, 11), // the pick, first heard on day 11
+            other(2, 12), // two other songs of theirs...
+            other(3, 20),
+            play(4, 21, Some(3_000), Ending::Skipped), // ...a skip, which doesn't count
+            other(5, 60),                              // ...and one too late
+        ];
+        let recs = [rec(1, Pool::Rediscover, 10), rec(1, Pool::Near, 10)];
+        let found = outcomes(&recs, &plays, &HashMap::new());
+        assert_eq!(found[0].returns, 2);
+        assert_eq!(found[1].returns, 0, "only rediscoveries count returns");
+        let r = reward(&found[0]).unwrap();
+        assert_eq!((r.base, r.bonus), (1.0, 0.5));
+    }
+
+    #[test]
     fn only_organic_replays_count() {
         let mut autoplayed = play(1, 14, Some(200_000), Ending::Finished);
         autoplayed.started_by = StartedBy::Autoplay;
@@ -281,7 +326,7 @@ mod tests {
     #[test]
     fn pools_without_evidence_keep_the_prior() {
         let beliefs = pool_posteriors(&BTreeMap::new());
-        assert_eq!(beliefs.len(), 3);
+        assert_eq!(beliefs.len(), Pool::ALL.len());
         assert!(beliefs.values().all(|p| *p == Posterior::PRIOR));
     }
 }

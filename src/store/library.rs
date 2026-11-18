@@ -6,9 +6,14 @@ use std::collections::{HashMap, HashSet};
 use anyhow::Result;
 use rusqlite::params;
 
-use super::{Store, parse_stored};
-use crate::model::names::title_key;
-use crate::model::{AlbumRef, ArtistId, ArtistRef, Familiarity, Heard, Playlist, TrackId};
+use jiff::Timestamp;
+
+use super::{Store, from_ms, parse_stored, to_ms};
+use crate::model::names::{is_placeholder_artist, title_key};
+use crate::model::{
+    AlbumRef, ArtistId, ArtistRef, Familiarity, Heard, LapsedArtist, Playlist, SKIP_BEFORE_MS,
+    TrackId,
+};
 
 impl Store {
     /// Replaces the playlists on file with `playlists`. Returns how many
@@ -115,6 +120,98 @@ impl Store {
             .query_map([], |row| Ok(ArtistId(row.get(0)?)))?
             .collect::<rusqlite::Result<HashSet<_>>>()?;
         Ok(Heard { tracks, artists })
+    }
+
+    /// Every artist with some evidence I liked them (a saved track or album,
+    /// a playlist entry, a rating from the service, a stream) and no stream
+    /// since `since`. Streams are listens of 30 s or more.
+    pub fn lapsed_artists(&self, since: Timestamp) -> Result<Vec<LapsedArtist>> {
+        let mut stmt = self.conn.prepare(
+            "WITH streams AS (
+                 SELECT t.artist_id, COUNT(*) AS n, MAX(p.started_at) AS last
+                 FROM plays p JOIN tracks t USING (track_id)
+                 WHERE p.ms_played >= ?2 GROUP BY t.artist_id),
+             saved AS (
+                 SELECT t.artist_id, COUNT(*) AS n
+                 FROM saved_tracks s JOIN tracks t USING (track_id) GROUP BY t.artist_id),
+             listed AS (
+                 SELECT t.artist_id, COUNT(DISTINCT pt.track_id) AS n
+                 FROM playlist_tracks pt JOIN tracks t USING (track_id) GROUP BY t.artist_id),
+             albums AS (SELECT artist_id, COUNT(*) AS n FROM saved_albums GROUP BY artist_id),
+             rated AS (SELECT artist_id, MIN(level) AS level FROM artist_familiarity GROUP BY artist_id),
+             evidence AS (
+                 SELECT artist_id FROM streams UNION SELECT artist_id FROM saved
+                 UNION SELECT artist_id FROM listed UNION SELECT artist_id FROM albums
+                 UNION SELECT artist_id FROM rated)
+             SELECT e.artist_id, COALESCE(saved.n, 0), COALESCE(listed.n, 0),
+                    COALESCE(albums.n, 0), rated.level, COALESCE(streams.n, 0), streams.last
+             FROM evidence e
+             LEFT JOIN streams USING (artist_id) LEFT JOIN saved USING (artist_id)
+             LEFT JOIN listed USING (artist_id) LEFT JOIN albums USING (artist_id)
+             LEFT JOIN rated USING (artist_id)
+             WHERE streams.last IS NULL OR streams.last < ?1
+             ORDER BY e.artist_id",
+        )?;
+        let placeholders: HashSet<i64> = self
+            .conn
+            .prepare("SELECT artist_id, name FROM artists")?
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .filter_map(|r| match r {
+                Ok((id, name)) if is_placeholder_artist(&name) => Some(Ok(id)),
+                Ok(_) => None,
+                Err(e) => Some(Err(e)),
+            })
+            .collect::<rusqlite::Result<_>>()?;
+        let lapsed = stmt
+            .query_map(params![to_ms(since), SKIP_BEFORE_MS], |row| {
+                let level: Option<String> = row.get(4)?;
+                let last: Option<i64> = row.get(6)?;
+                Ok(LapsedArtist {
+                    artist: ArtistId(row.get(0)?),
+                    saved: row.get(1)?,
+                    listed: row.get(2)?,
+                    albums: row.get(3)?,
+                    familiarity: level
+                        .map(|l| parse_stored(l, Familiarity::parse))
+                        .transpose()?,
+                    streams: row.get(5)?,
+                    last_stream: last.map(from_ms).transpose()?,
+                })
+            })?
+            .filter(|l| {
+                l.as_ref()
+                    .map_or(true, |l| !placeholders.contains(&l.artist.0))
+            })
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(lapsed)
+    }
+
+    /// Each artist's tracks I showed I loved, most loved first: saved, in a
+    /// playlist I made, and streamed (each stream counts a fifth of a save).
+    pub fn loved_tracks(&self, artists: &[ArtistId]) -> Result<HashMap<ArtistId, Vec<TrackId>>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT t.track_id,
+                    EXISTS (SELECT 1 FROM saved_tracks s WHERE s.track_id = t.track_id)
+                  + EXISTS (SELECT 1 FROM playlist_tracks pt WHERE pt.track_id = t.track_id)
+                  + 0.2 * (SELECT COUNT(*) FROM plays p
+                           WHERE p.track_id = t.track_id AND p.ms_played >= ?2) AS love
+             FROM tracks t WHERE t.artist_id = ?1 AND love > 0
+             ORDER BY love DESC, t.track_id",
+        )?;
+        let mut loved = HashMap::new();
+        for artist in artists {
+            let tracks = stmt
+                .query_map(params![artist.0, SKIP_BEFORE_MS], |row| {
+                    Ok(TrackId(row.get(0)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            if !tracks.is_empty() {
+                loved.insert(*artist, tracks);
+            }
+        }
+        Ok(loved)
     }
 
     /// Which of `tracks` are on an album in my library, going by the album
@@ -236,5 +333,87 @@ mod tests {
         let no_album = s.resolve_track(&track("CCR", "Demo", None)).unwrap();
         let found = s.on_saved_albums([on, off, no_album]).unwrap();
         assert_eq!(found, HashSet::from([on]));
+    }
+
+    #[test]
+    fn an_artist_is_lapsed_with_evidence_and_no_recent_stream() {
+        let s = Store::open_in_memory().unwrap();
+        let old: Timestamp = "2020-01-01T00:00:00Z".parse().unwrap();
+        let recent: Timestamp = "2026-10-01T00:00:00Z".parse().unwrap();
+        s.record_saved(&[
+            (track("CCR", "Fortunate Son", None), old),
+            (track("Kept Up", "Hit", None), old),
+        ])
+        .unwrap();
+        s.record_playlists(&[Playlist {
+            name: "Chill".into(),
+            tracks: vec![
+                (track("CCR", "Fortunate Son", None), None),
+                (track("CCR", "Green River", None), None),
+            ],
+        }])
+        .unwrap();
+        s.record_familiarity(
+            "spotify",
+            &[(ArtistRef::named("Andrew Garfield"), Familiarity::Lapsed)],
+        )
+        .unwrap();
+        let stream = |artist: &str, title: &str, at: Timestamp, ms: u32| Listen {
+            track: track(artist, title, None),
+            started_at: at,
+            ms_played: Some(ms),
+            ending: Ending::Unknown,
+            started_by: StartedBy::Unknown,
+            provenance: Provenance::BasicHistory,
+        };
+        s.import_history(&[
+            stream(
+                "CCR",
+                "Green River",
+                "2025-12-01T00:00:00Z".parse().unwrap(),
+                180_000,
+            ),
+            stream(
+                "CCR",
+                "Proud Mary",
+                "2026-09-01T00:00:00Z".parse().unwrap(),
+                5_000,
+            ),
+            stream("Kept Up", "Hit", recent, 200_000),
+        ])
+        .unwrap();
+
+        // A compilation names no artist, even if one slipped into the store.
+        s.record_saved_albums(&[AlbumRef {
+            title: "Hits 2020".into(),
+            artist: ArtistRef::named("Various Artists"),
+        }])
+        .unwrap();
+        let since: Timestamp = "2026-06-01T00:00:00Z".parse().unwrap();
+        let lapsed = s.lapsed_artists(since).unwrap();
+        let ccr = s.resolve_artist(&ArtistRef::named("CCR")).unwrap();
+        let garfield = s
+            .resolve_artist(&ArtistRef::named("Andrew Garfield"))
+            .unwrap();
+        let ids: Vec<ArtistId> = lapsed.iter().map(|l| l.artist).collect();
+        assert_eq!(
+            ids,
+            vec![ccr, garfield],
+            "Kept Up streamed recently; a 5 s skip isn't a stream"
+        );
+        let c = &lapsed[0];
+        assert_eq!((c.saved, c.listed, c.albums, c.streams), (1, 2, 0, 1));
+        assert_eq!(lapsed[1].familiarity, Some(Familiarity::Lapsed));
+
+        let loved = s.loved_tracks(&[ccr]).unwrap();
+        let son = s
+            .resolve_track(&track("CCR", "Fortunate Son", None))
+            .unwrap();
+        let river = s.resolve_track(&track("CCR", "Green River", None)).unwrap();
+        assert_eq!(
+            loved[&ccr],
+            vec![son, river],
+            "saved and listed beats listed and streamed"
+        );
     }
 }

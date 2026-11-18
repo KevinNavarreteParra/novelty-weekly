@@ -1,5 +1,6 @@
 //! Playlist order (spec §7.4 step 4): pools spread evenly through the list,
-//! a deep cut first as a gentle on-ramp, and no two far jumps in a row.
+//! a deep cut (or, without one, a rediscovery) first as a gentle on-ramp,
+//! and no two far jumps in a row.
 
 use std::collections::BTreeMap;
 
@@ -23,9 +24,13 @@ pub fn interleave(by_pool: BTreeMap<Pool, Vec<Candidate>>) -> Vec<Candidate> {
     keyed.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
     let mut order: Vec<Candidate> = keyed.into_iter().map(|(_, _, c)| c).collect();
 
-    if let Some(first_deep) = order.iter().position(|c| c.pool == Pool::Deep) {
-        let deep = order.remove(first_deep);
-        order.insert(0, deep);
+    let on_ramp = order
+        .iter()
+        .position(|c| c.pool == Pool::Deep)
+        .or_else(|| order.iter().position(|c| c.pool == Pool::Rediscover));
+    if let Some(first) = on_ramp {
+        let pick = order.remove(first);
+        order.insert(0, pick);
     }
     separate_far_jumps(&mut order);
     order
@@ -70,6 +75,7 @@ mod tests {
                 Pool::Deep => 'd',
                 Pool::Near => 'n',
                 Pool::Far => 'f',
+                Pool::Rediscover => 'r',
             })
             .collect()
     }
@@ -108,5 +114,15 @@ mod tests {
             (Pool::Far, picks(Pool::Far, 4, 200)),
         ]));
         assert_eq!(pools(&order), "fnfff");
+    }
+
+    #[test]
+    fn without_a_deep_cut_a_rediscovery_opens() {
+        let by_pool = BTreeMap::from([
+            (Pool::Near, picks(Pool::Near, 3, 100)),
+            (Pool::Far, picks(Pool::Far, 3, 200)),
+            (Pool::Rediscover, picks(Pool::Rediscover, 1, 300)),
+        ]);
+        assert!(pools(&interleave(by_pool)).starts_with('r'));
     }
 }

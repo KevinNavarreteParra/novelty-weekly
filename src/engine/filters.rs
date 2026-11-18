@@ -40,14 +40,17 @@ pub struct Filters<'a> {
 }
 
 impl Filters<'_> {
+    /// Rediscovery may offer a song or artist I've heard; every other rule
+    /// holds for it too.
     pub fn check(&self, c: &Candidate) -> Result<(), Rejection> {
-        if self.profile.heard(c.track) || self.on_saved_albums.contains(&c.track) {
+        let novel = c.pool.is_novel();
+        if novel && (self.profile.heard(c.track) || self.on_saved_albums.contains(&c.track)) {
             return Err(Rejection::HeardTrack);
         }
         if self.recommended.contains(&c.track) {
             return Err(Rejection::AlreadyRecommended);
         }
-        if c.pool != Pool::Deep && self.profile.knows(c.artist) {
+        if novel && c.pool != Pool::Deep && self.profile.knows(c.artist) {
             return Err(Rejection::HeardArtist);
         }
         let length = self.durations.get(&c.track);
@@ -153,5 +156,13 @@ mod tests {
         assert_eq!(check(Pool::Far, 14, 3), Err(Rejection::BlockedTag));
         assert_eq!(check(Pool::Far, 15, 4), Err(Rejection::BlockedArtist));
         assert_eq!(check(Pool::Far, 16, 5), Ok(()));
+        // Rediscovery brings back what I've heard, never what was recommended.
+        assert_eq!(check(Pool::Rediscover, 10, 1), Ok(()));
+        assert_eq!(check(Pool::Rediscover, 17, 1), Ok(()));
+        assert_eq!(
+            check(Pool::Rediscover, 11, 1),
+            Err(Rejection::AlreadyRecommended)
+        );
+        assert_eq!(check(Pool::Rediscover, 12, 1), Err(Rejection::Duration));
     }
 }

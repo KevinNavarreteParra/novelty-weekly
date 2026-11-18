@@ -12,7 +12,8 @@
 //! 2. **Pools**: knowledge gathered for the seeds, then deep, near and far
 //!    candidates. Deep cuts wait for a full history: with only a cold start
 //!    or the last year's, which of a liked artist's tracks I've heard is
-//!    uncertain.
+//!    uncertain. Rediscoveries come from artists I liked and haven't streamed
+//!    within the lapse, once the history reaches back that far.
 //! 3. **Filters**: the hard rules.
 //! 4. **Beliefs**: how past picks fared, as the bandit's posteriors.
 //! 5. **Select and resolve**: `k` picks across the pools, each matched to a
@@ -28,8 +29,8 @@ mod present;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{Result, bail};
-use jiff::Timestamp;
 use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Timestamp};
 use log::{info, warn};
 use rand::rngs::StdRng;
 use rand::seq::IndexedRandom;
@@ -43,6 +44,7 @@ use crate::engine::candidate::Candidate;
 use crate::engine::feedback;
 use crate::engine::filters::{Filters, MAX_DURATION_MS, MIN_DURATION_MS, Rejection};
 use crate::engine::pools::far::{self, TagSampling};
+use crate::engine::pools::rediscover::{self, Shortlist};
 use crate::engine::pools::{deep, near};
 use crate::engine::profile::{Profile, ProfileParams, SeedPlan, tag_shares};
 use crate::engine::select::allocate::{Posterior, ShareBounds};
@@ -70,6 +72,8 @@ const FAR_CHART_DEPTH: usize = 60;
 const FAR_CHART_ARTISTS: usize = 15;
 const FAR_WALKS: usize = 20;
 const WALK_HOPS: usize = 3;
+/// An artist rediscovered rests this many weeks before it can be again.
+const REDISCOVER_REST_WEEKS: i64 = 8;
 /// Rounds of select-then-resolve before settling for a shorter playlist. A
 /// round only searches its new picks, and replacements can fail one after
 /// another, so this is a backstop, not a budget.
@@ -87,6 +91,8 @@ pub struct BuildParams {
     pub blocked_artists: Vec<String>,
     pub blocked_tags: Vec<String>,
     pub playlist_name: String,
+    /// Days without a stream before a liked artist counts as lapsed.
+    pub rediscover_lapse_days: u32,
 }
 
 impl BuildParams {
@@ -107,6 +113,13 @@ impl BuildParams {
                     cap: b.pool_cap,
                 },
                 b.mmr_lambda,
+            )
+            .with_bounds(
+                Pool::Rediscover,
+                ShareBounds {
+                    floor: b.rediscover_floor,
+                    cap: b.rediscover_cap,
+                },
             ),
             decay_rho: b.decay_rho,
             popularity_gamma: b.popularity_gamma,
@@ -114,6 +127,7 @@ impl BuildParams {
             blocked_artists: config.blocklist.artists.clone(),
             blocked_tags: config.blocklist.tags.clone(),
             playlist_name: config.spotify.playlist_name.clone(),
+            rediscover_lapse_days: b.rediscover_lapse_days,
         })
     }
 }
@@ -246,6 +260,7 @@ pub fn build(
         info!("no deep cuts until a full (Extended Streaming History) export is imported");
     }
     candidates.extend(far_candidates(&gather, &profile, &seeds, params, rng)?);
+    candidates.extend(rediscover_candidates(&gather, &profile, params, now, rng)?);
     info!("{} candidates", candidates.len());
 
     // 3. Filters.
@@ -436,6 +451,53 @@ fn far_candidates<K: Knowledge>(
     Ok(candidates)
 }
 
+/// Rediscoveries: liked artists with no stream within the lapse, except those
+/// rediscovered in the last few weeks. None until the history on file
+/// reaches back past the lapse, since before that "no stream" means nothing.
+fn rediscover_candidates<K: Knowledge>(
+    gather: &Gather<K>,
+    profile: &Profile,
+    params: &BuildParams,
+    now: Timestamp,
+    rng: &mut impl Rng,
+) -> Result<Vec<Candidate>> {
+    let lapse = SignedDuration::from_hours(24 * i64::from(params.rediscover_lapse_days));
+    let since = now.checked_sub(lapse)?;
+    if !gather
+        .store
+        .history_start()?
+        .is_some_and(|start| start <= since)
+    {
+        info!(
+            "no rediscoveries until the history reaches back {} days",
+            params.rediscover_lapse_days
+        );
+        return Ok(Vec::new());
+    }
+    let rest_from = now.checked_sub(SignedDuration::from_hours(24 * 7 * REDISCOVER_REST_WEEKS))?;
+    let resting: HashSet<ArtistId> = gather
+        .store
+        .ledger()?
+        .iter()
+        .filter(|r| r.pool == Pool::Rediscover && r.published_at >= rest_from)
+        .map(|r| r.artist)
+        .collect();
+    let lapsed = gather.store.lapsed_artists(since)?;
+    let shortlist = rediscover::shortlist(&lapsed, &resting, Shortlist::default(), rng);
+    let artists: Vec<ArtistId> = shortlist.iter().map(|l| l.artist).collect();
+    let popular = gather.popular(&artists)?;
+    let loved = gather.store.loved_tracks(&artists)?;
+    info!(
+        "rediscover: {} lapsed artists, {} resting, {} shortlisted",
+        lapsed.len(),
+        resting.len(),
+        artists.len()
+    );
+    Ok(rediscover::candidates(
+        &shortlist, &loved, &popular, profile, rng,
+    ))
+}
+
 /// The bandit's posterior for each pool, from every past pick's outcome.
 /// Saves made since the first playlist are synced first, since saving counts.
 fn beliefs(
@@ -491,7 +553,8 @@ enum Resolution {
 }
 
 impl Resolver<'_> {
-    fn resolve(&self, track: TrackId, service: &mut impl ListeningService) -> Result<Resolution> {
+    fn resolve(&self, pick: &Candidate, service: &mut impl ListeningService) -> Result<Resolution> {
+        let track = pick.track;
         let wanted = self.store.track_ref(track)?;
         let reject = |resolution: Resolution, reason: String| {
             info!(
@@ -508,7 +571,8 @@ impl Resolver<'_> {
             };
             let same = self.store.resolve_track(&found)?;
             if same != track {
-                if self.profile.heard(same) || self.recommended.contains(&same) {
+                let heard = pick.pool.is_novel() && self.profile.heard(same);
+                if heard || self.recommended.contains(&same) {
                     return reject(
                         Resolution::Unplayable,
                         format!(
@@ -568,7 +632,7 @@ fn select_playable(
             if playable.contains_key(&pick.track) {
                 continue;
             }
-            match resolver.resolve(pick.track, service)? {
+            match resolver.resolve(pick, service)? {
                 Resolution::Playable(track) => {
                     playable.insert(pick.track, track);
                 }

@@ -21,6 +21,9 @@ autoplay_weight = 1.0        # no effect yet: neither the export nor the poll ma
 popularity_gamma = 0.5
 far_skip_top_ranks = 20
 timezone = "America/Los_Angeles"
+rediscover_floor = 0.05
+rediscover_cap = 0.15
+rediscover_lapse_days = 365  # spec §13 suggests 2-3 years; raise once a full history is in
 
 [blocklist]
 artists = []

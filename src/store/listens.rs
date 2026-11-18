@@ -141,6 +141,20 @@ impl Store {
         latest.map(from_ms).transpose().map_err(Into::into)
     }
 
+    /// When the oldest history export on file begins, if any: how far back
+    /// "I haven't played them in a year" can be checked.
+    pub fn history_start(&self) -> Result<Option<Timestamp>> {
+        let start: Option<i64> = self.conn.query_row(
+            "SELECT MIN(started_at) FROM plays WHERE provenance IN (?1, ?2)",
+            params![
+                Provenance::History.as_str(),
+                Provenance::BasicHistory.as_str()
+            ],
+            |row| row.get(0),
+        )?;
+        start.map(from_ms).transpose().map_err(Into::into)
+    }
+
     /// When the newest history export on file ends, if any: listens after it
     /// are known only from polling.
     pub fn history_end(&self) -> Result<Option<Timestamp>> {
