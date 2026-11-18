@@ -10,8 +10,9 @@ I have never played and was never recommended before, drawn from three pools:
 A Thompson-sampling bandit learns from completions, skips and saves which pools land, with
 a 20% floor per pool so it never stops exploring. Design: [docs/spec.md](docs/spec.md).
 
-**Status:** the whole pipeline is built and tested against fake services. It has not run
-against live Spotify or Last.fm yet. `report` and `block` are still stubs.
+**Status:** live since 2026-11-09, publishing weekly from a polled feed plus the last year
+of history (Spotify's account data export). Deep cuts wait for the full Extended Streaming
+History. `block` and `report --format svg` are still stubs.
 
 ## The data contract
 
@@ -23,6 +24,11 @@ service's format. Integrations only translate:
 - The **store** matches them to its own IDs: an artist is its normalized name, and a track
   is that artist plus a normalized title, so remasters and live versions are one song.
 - The **engine** only sees resolved records, such as `Play`.
+- Where two sources record the same days, the more detailed one's plays stand: a full
+  history over an account-data one over polling (`Provenance::detail`).
+- What I know apart from plays (`Heard`: saved and ranked tracks, my playlists, saved
+  albums, artists Spotify rates my listening of) always counts as heard, whatever the
+  history covers.
 
 Two traits name the roles a service can fill
 ([`src/integrations/mod.rs`](src/integrations/mod.rs)): `ListeningService` (Spotify) and
@@ -34,7 +40,7 @@ Two traits name the roles a service can fill
 src/
   model/         the canonical types and their rules
   integrations/  Spotify (API, login, history export) and Last.fm adapters
-  store/         SQLite: schema.sql is the whole data model
+  store/         SQLite: schema.sql and its later versions are the whole data model
   engine/        profile, pools, filters, selector, feedback: pure functions
   commands/      one module per CLI command; build/ wires the full pipeline
 tests/build.rs   a whole build against fake services
@@ -53,11 +59,12 @@ and run commands through `prun`. State lives in `$NOVELTY_HOME`
 ```sh
 cargo install --path .
 prun novelty auth                         # once; --paste if the browser is elsewhere
-novelty ingest-history my_spotify_data.zip
-prun novelty cold-start                   # instead, until the export arrives
+novelty ingest-history my_spotify_data.zip   # either export package, or both; re-runnable
+prun novelty cold-start                   # instead, until an export arrives
 prun novelty poll                         # then every 30 min via deploy/
 prun novelty build --dry-run              # preview the playlist and why
 novelty ledger show
+novelty report                            # how picks fare; is my listening broadening?
 ```
 
 `scripts/check.sh` runs the local CI: fmt, clippy, tests.
