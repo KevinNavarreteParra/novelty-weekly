@@ -53,6 +53,9 @@ impl Store {
         store
             .ensure_current_keys()
             .context("rebuilding name keys")?;
+        store
+            .ensure_polls_measured_from_end()
+            .context("re-measuring polled plays")?;
         Ok(store)
     }
 }

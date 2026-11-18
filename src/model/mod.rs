@@ -36,7 +36,8 @@ pub use knowledge::{
     ArtistTag, ArtistTags, PopularTrack, PopularTracks, SimilarArtist, SimilarityGraph,
 };
 pub use listen::{
-    COMPLETE_AFTER_MS, Ending, Listen, Play, Provenance, SKIP_BEFORE_MS, StartedBy, Verdict, judge,
+    COMPLETE_AFTER_MS, Ending, IDLE_SLACK_MS, Listen, Play, Provenance, SKIP_BEFORE_MS, StartedBy,
+    Verdict, judge, played_since_previous,
 };
 pub use recommendation::{Arm, Pool, Recommendation, Week};
 

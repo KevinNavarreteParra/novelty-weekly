@@ -1,19 +1,33 @@
 //! Recording listens, and reading them back as plays.
 
+use std::collections::BTreeMap;
+
 use anyhow::Result;
 use jiff::Timestamp;
+use log::info;
 use rusqlite::params;
 
 use super::{Store, from_ms, parse_stored, to_ms};
-use crate::model::{ArtistId, Ending, Listen, Play, Provenance, StartedBy, TrackId};
+use crate::model::{
+    ArtistId, Ending, Listen, Play, Provenance, StartedBy, TrackId, played_since_previous,
+};
+
+/// The setting that says polled plays are measured from the previous
+/// listen's end, because the feed's `played_at` is an end time. Plays polled
+/// before it was set were stored as if `played_at` were the start.
+const POLL_TIMING: &str = "poll_timing";
+const FROM_PREVIOUS_END: &str = "previous_end";
 
 /// What an import changed.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ImportSummary {
     /// Listens added, or completed where `ms_played` had been unknown.
     pub recorded: usize,
-    /// Polled plays replaced because the import covers their span.
-    pub replaced_polled: usize,
+    /// Plays from less detailed sources (polls, a basic export) removed
+    /// because the import covers their span.
+    pub replaced: usize,
+    /// Listens left out because a more detailed history already covers them.
+    pub covered: usize,
 }
 
 impl Store {
@@ -24,62 +38,182 @@ impl Store {
     /// how many rows were added or completed.
     pub fn record_listens(&self, listens: &[Listen]) -> Result<usize> {
         let tx = self.conn.unchecked_transaction()?;
-        let recorded = self.insert_listens(listens)?;
+        let recorded = self.insert_listens(listens.iter())?;
         tx.commit()?;
         Ok(recorded)
     }
 
-    /// Imports a full listening-history export.
+    /// Imports a listening-history export.
     ///
-    /// An export is a better record than polling for the span it covers (exact
-    /// `ms_played`, real endings), so polled plays inside that span go first.
+    /// Where two sources cover the same span, the plays of the more detailed
+    /// one stand ([`Provenance::detail`]). So an import removes less detailed
+    /// plays (polled, or a basic export's) inside its span, and leaves out its
+    /// own listens inside the span of a more detailed history already on file.
+    /// Listens from several sources are imported most detailed first.
     /// Re-importing the same export changes nothing.
     pub fn import_history(&self, listens: &[Listen]) -> Result<ImportSummary> {
-        let Some((first, last)) = span(listens) else {
-            return Ok(ImportSummary::default());
-        };
+        let mut by_source: BTreeMap<std::cmp::Reverse<u8>, (Provenance, Vec<&Listen>)> =
+            BTreeMap::new();
+        for listen in listens {
+            by_source
+                .entry(std::cmp::Reverse(listen.provenance.detail()))
+                .or_insert_with(|| (listen.provenance, Vec::new()))
+                .1
+                .push(listen);
+        }
         let tx = self.conn.unchecked_transaction()?;
-        let replaced_polled = self.conn.execute(
-            "DELETE FROM plays WHERE provenance IN (?1, ?2) AND started_at BETWEEN ?3 AND ?4",
-            params![
-                Provenance::Poll.as_str(),
-                Provenance::PollEstimated.as_str(),
-                to_ms(first),
-                to_ms(last)
-            ],
-        )?;
-        let recorded = self.insert_listens(listens)?;
+        let mut summary = ImportSummary::default();
+        for (provenance, listens) in by_source.into_values() {
+            // A listen may really have started up to its source's uncertainty
+            // later than recorded, so one just before a span may be inside it.
+            let slack = provenance.end_uncertainty_ms();
+            let covers = self.spans_more_detailed_than(provenance)?;
+            let (covered, kept): (Vec<&Listen>, Vec<&Listen>) =
+                listens.into_iter().partition(|l| {
+                    let at = to_ms(l.started_at);
+                    covers
+                        .iter()
+                        .any(|(from, to)| at + slack >= *from && at <= *to)
+                });
+            summary.covered += covered.len();
+            let Some((from, to)) = span(kept.iter().copied()) else {
+                continue;
+            };
+            let to = to + slack;
+            for less in Provenance::ALL
+                .iter()
+                .filter(|p| p.detail() < provenance.detail())
+            {
+                summary.replaced += self.conn.execute(
+                    "DELETE FROM plays WHERE provenance = ?1 AND started_at BETWEEN ?2 AND ?3",
+                    params![less.as_str(), from - less.end_uncertainty_ms(), to],
+                )?;
+            }
+            summary.recorded += self.insert_listens(kept.into_iter())?;
+        }
         tx.commit()?;
-        Ok(ImportSummary {
-            recorded,
-            replaced_polled,
-        })
+        Ok(summary)
     }
 
-    /// Where the next poll of a recently-played feed should start reading.
-    ///
-    /// Just before the newest polled listen, so that listen (still pending
-    /// when it was last read) is read again with its successor and completed.
-    /// But never before the end of the imported history: the export already
-    /// holds those listens, under slightly different start times, so polling
-    /// them again would count them twice.
+    /// Each span, as `(first start, last start)` in unix ms, that a history
+    /// more detailed than `provenance` already covers.
+    fn spans_more_detailed_than(&self, provenance: Provenance) -> Result<Vec<(i64, i64)>> {
+        let mut spans = Vec::new();
+        for more in Provenance::ALL
+            .iter()
+            .filter(|p| p.detail() > provenance.detail())
+        {
+            let span: (Option<i64>, Option<i64>) = self.conn.query_row(
+                "SELECT MIN(started_at), MAX(started_at) FROM plays WHERE provenance = ?1",
+                [more.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            if let (Some(from), Some(to)) = span {
+                spans.push((from, to + more.end_uncertainty_ms()));
+            }
+        }
+        Ok(spans)
+    }
+
+    /// When the last listen on file ended: where the next poll of a
+    /// recently-played feed starts reading, and what measures the first
+    /// listen it reads. A source that drops the seconds of its end times is
+    /// taken to have ended at the end of that minute, so polling doesn't read
+    /// its last listen again.
     pub fn poll_cursor(&self) -> Result<Option<Timestamp>> {
-        let (polled, history_end): (Option<i64>, Option<i64>) = self.conn.query_row(
-            "SELECT MAX(CASE WHEN provenance IN (?1, ?2) THEN started_at END),
-                    MAX(CASE WHEN provenance = ?3 THEN started_at + COALESCE(ms_played, 0) END)
-             FROM plays",
-            params![
-                Provenance::Poll.as_str(),
-                Provenance::PollEstimated.as_str(),
-                Provenance::History.as_str()
-            ],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+        let mut latest: Option<i64> = None;
+        for provenance in Provenance::ALL {
+            let end: Option<i64> = self.conn.query_row(
+                "SELECT MAX(started_at + COALESCE(ms_played, 0)) FROM plays WHERE provenance = ?1",
+                [provenance.as_str()],
+                |row| row.get(0),
+            )?;
+            if let Some(end) = end {
+                let end = end + provenance.end_uncertainty_ms();
+                latest = Some(latest.map_or(end, |l| l.max(end)));
+            }
+        }
+        latest.map(from_ms).transpose().map_err(Into::into)
+    }
+
+    /// Re-measures plays polled before the feed's `played_at` was known to be
+    /// an end time. Each one's stored start is really when it ended, and its
+    /// `ms_played` was the gap to the next listen, which measures that one
+    /// instead. Both are derived again from the stored end times, the way the
+    /// poller now does it. Runs once per database; a new database has nothing
+    /// to re-measure.
+    pub(super) fn ensure_polls_measured_from_end(&self) -> Result<()> {
+        if self.setting(POLL_TIMING)?.as_deref() == Some(FROM_PREVIOUS_END) {
+            return Ok(());
+        }
+        /// A stored play, by when it ended.
+        struct Ended {
+            end: i64,
+            id: i64,
+            duration: Option<u32>,
+            polled: bool,
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let mut plays: Vec<Ended> = Vec::new();
+        let mut stmt = self.conn.prepare(
+            "SELECT p.play_id, p.started_at, p.ms_played, t.duration_ms, p.provenance
+             FROM plays p JOIN tracks t USING (track_id)",
         )?;
-        let cursor = match (polled.map(|ms| ms - 1), history_end) {
-            (Some(p), Some(h)) => Some(p.max(h)),
-            (p, h) => p.or(h),
-        };
-        cursor.map(from_ms).transpose().map_err(Into::into)
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let started_at: i64 = row.get(1)?;
+            let ms_played: Option<i64> = row.get(2)?;
+            let provenance = parse_stored(row.get(4)?, Provenance::parse)?;
+            let polled = provenance.detail() == Provenance::Poll.detail();
+            // A polled play's stored start is its end; any other's end is its
+            // start plus what it played.
+            let end = if polled {
+                started_at
+            } else {
+                started_at + ms_played.unwrap_or(0) + provenance.end_uncertainty_ms()
+            };
+            plays.push(Ended {
+                end,
+                id: row.get(0)?,
+                duration: row.get(3)?,
+                polled,
+            });
+        }
+        drop(rows);
+        drop(stmt);
+        plays.sort_unstable_by_key(|p| (p.end, p.id));
+        let mut previous: Option<i64> = None;
+        let mut remeasured = 0;
+        for Ended {
+            end,
+            id,
+            duration,
+            polled,
+        } in plays
+        {
+            if polled {
+                let (ms, provenance) = played_since_previous(duration, previous.map(|p| end - p));
+                let start = end - i64::from(ms.unwrap_or(0));
+                let changed = self.conn.execute(
+                    "UPDATE OR IGNORE plays SET started_at = ?2, ms_played = ?3, provenance = ?4
+                     WHERE play_id = ?1",
+                    params![id, start, ms, provenance.as_str()],
+                )?;
+                if changed == 0 {
+                    // Another play of the track already starts then: the same listen.
+                    self.conn
+                        .execute("DELETE FROM plays WHERE play_id = ?1", [id])?;
+                }
+                remeasured += 1;
+            }
+            previous = Some(end);
+        }
+        self.set_setting(POLL_TIMING, FROM_PREVIOUS_END)?;
+        tx.commit()?;
+        if remeasured > 0 {
+            info!("re-measured {remeasured} polled plays from the previous listen's end");
+        }
+        Ok(())
     }
 
     /// Every play on file, oldest first.
@@ -108,7 +242,7 @@ impl Store {
 
     /// Callers wrap this in a transaction; thousands of single-row commits
     /// would take minutes.
-    fn insert_listens(&self, listens: &[Listen]) -> Result<usize> {
+    fn insert_listens<'a>(&self, listens: impl Iterator<Item = &'a Listen>) -> Result<usize> {
         let mut recorded = 0;
         for listen in listens {
             let track = self.resolve_track(&listen.track)?;
@@ -136,11 +270,14 @@ impl Store {
     }
 }
 
-/// The earliest and latest start among `listens`.
-fn span(listens: &[Listen]) -> Option<(Timestamp, Timestamp)> {
-    let first = listens.iter().map(|l| l.started_at).min()?;
-    let last = listens.iter().map(|l| l.started_at).max()?;
-    Some((first, last))
+/// The earliest and latest start among `listens`, in unix ms.
+fn span<'a>(listens: impl Iterator<Item = &'a Listen>) -> Option<(i64, i64)> {
+    listens.fold(None, |span, l| {
+        let at = to_ms(l.started_at);
+        Some(span.map_or((at, at), |(from, to): (i64, i64)| {
+            (from.min(at), to.max(at))
+        }))
+    })
 }
 
 #[cfg(test)]
@@ -181,19 +318,28 @@ mod tests {
     }
 
     #[test]
-    fn the_poll_cursor_rereads_the_newest_poll_but_not_the_history() {
+    fn the_poll_cursor_is_the_end_of_the_last_listen() {
         let s = Store::open_in_memory().unwrap();
         assert_eq!(s.poll_cursor().unwrap(), None);
 
-        s.record_listens(&[listen("polled", 100, None, Provenance::Poll)])
+        s.record_listens(&[listen("polled", 100, Some(30_000), Provenance::Poll)])
             .unwrap();
-        let just_before = Timestamp::from_millisecond(100_000 - 1).unwrap();
-        assert_eq!(s.poll_cursor().unwrap(), Some(just_before));
+        let polled_end = Timestamp::from_second(130).unwrap();
+        assert_eq!(s.poll_cursor().unwrap(), Some(polled_end));
 
-        s.import_history(&[listen("history", 50, Some(200_000), Provenance::History)])
+        s.import_history(&[listen("history", 200, Some(200_000), Provenance::History)])
             .unwrap();
-        let history_end = Timestamp::from_millisecond(250_000).unwrap();
+        let history_end = Timestamp::from_second(400).unwrap();
         assert_eq!(s.poll_cursor().unwrap(), Some(history_end));
+    }
+
+    #[test]
+    fn a_basic_history_is_taken_to_end_at_the_end_of_its_minute() {
+        let s = Store::open_in_memory().unwrap();
+        s.import_history(&[listen("A", 60, Some(60_000), Provenance::BasicHistory)])
+            .unwrap();
+        let end = Timestamp::from_millisecond(120_000 + 59_999).unwrap();
+        assert_eq!(s.poll_cursor().unwrap(), Some(end));
     }
 
     #[test]
@@ -214,12 +360,102 @@ mod tests {
             summary,
             ImportSummary {
                 recorded: 2,
-                replaced_polled: 1
+                replaced: 1,
+                covered: 0,
             }
         );
         assert_eq!(s.plays().unwrap().len(), 3);
 
         let again = s.import_history(&history).unwrap();
         assert_eq!(again, ImportSummary::default());
+    }
+
+    #[test]
+    fn a_full_history_replaces_a_basic_one_over_its_span() {
+        let s = Store::open_in_memory().unwrap();
+        let basic = [
+            listen("old", 100, Some(60_000), Provenance::BasicHistory),
+            listen("newer", 5_000, Some(60_000), Provenance::BasicHistory),
+        ];
+        s.import_history(&basic).unwrap();
+        // The full export's times for "old" are a few seconds off the basic one's.
+        let full = [listen("old", 130, Some(60_000), Provenance::History)];
+        let summary = s.import_history(&full).unwrap();
+        assert_eq!(summary.replaced, 1);
+        let starts: Vec<i64> = s
+            .plays()
+            .unwrap()
+            .iter()
+            .map(|p| p.started_at.as_second())
+            .collect();
+        assert_eq!(starts, vec![130, 5_000]);
+    }
+
+    #[test]
+    fn a_basic_history_leaves_out_what_a_full_one_covers() {
+        let s = Store::open_in_memory().unwrap();
+        s.import_history(&[
+            listen("A", 100, Some(60_000), Provenance::History),
+            listen("B", 1_000, Some(60_000), Provenance::History),
+        ])
+        .unwrap();
+        let basic = [
+            listen("A", 90, Some(60_000), Provenance::BasicHistory),
+            listen("C", 2_000, Some(60_000), Provenance::BasicHistory),
+        ];
+        let summary = s.import_history(&basic).unwrap();
+        // "A" at 90 s may really have started at 100 s, inside the full span.
+        assert_eq!(summary.covered, 1);
+        assert_eq!(summary.recorded, 1);
+        let inside = [listen("B", 995, Some(60_000), Provenance::BasicHistory)];
+        assert_eq!(s.import_history(&inside).unwrap().covered, 1);
+        assert_eq!(s.plays().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn plays_polled_with_played_at_as_their_start_are_remeasured_once() {
+        let s = Store::open_in_memory().unwrap();
+        let track = |title: &str| {
+            let mut t = TrackRef::new(title, ArtistRef::named("Artist"));
+            t.duration_ms = Some(200_000);
+            t
+        };
+        // The old poller stored each `played_at` (an end) as the start, and
+        // the gap to the next one as `ms_played`.
+        let old = |t: TrackRef, ended_s: i64, ms: Option<u32>| Listen {
+            track: t,
+            started_at: Timestamp::from_second(ended_s).unwrap(),
+            ms_played: ms,
+            ending: Ending::Unknown,
+            started_by: StartedBy::Unknown,
+            provenance: Provenance::Poll,
+        };
+        s.record_listens(&[
+            old(track("first"), 1_000, Some(20_000)),
+            old(track("skipped"), 1_020, Some(180_000)),
+            old(track("finished"), 1_200, None),
+        ])
+        .unwrap();
+        s.set_setting(POLL_TIMING, "").unwrap();
+
+        s.ensure_polls_measured_from_end().unwrap();
+        let measured: Vec<(i64, Option<u32>)> = s
+            .plays()
+            .unwrap()
+            .iter()
+            .map(|p| (p.started_at.as_second(), p.ms_played))
+            .collect();
+        assert_eq!(
+            measured,
+            vec![
+                (800, Some(200_000)),
+                (1_000, Some(20_000)),
+                (1_020, Some(180_000))
+            ]
+        );
+
+        // Recorded as measured, so a second open leaves them be.
+        s.ensure_polls_measured_from_end().unwrap();
+        assert_eq!(s.plays().unwrap()[0].started_at.as_second(), 800);
     }
 }

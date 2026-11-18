@@ -202,7 +202,7 @@ impl ListeningService for Spotify {
                 entries.push((track, played_at));
             }
         }
-        Ok(recent::listens_from_feed(entries))
+        Ok(recent::listens_from_feed(entries, after))
     }
 
     fn saved_since(&mut self, since: Timestamp) -> Result<Vec<(TrackRef, Timestamp)>> {

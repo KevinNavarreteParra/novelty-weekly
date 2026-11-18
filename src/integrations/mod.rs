@@ -29,9 +29,9 @@ pub trait ListeningService {
     /// carrying one needs no search to be published.
     fn namespace(&self) -> Namespace;
 
-    /// Listens that started after `after`, oldest first. The newest may have
-    /// `ms_played: None` until a later call (asked from just before it) can
-    /// tell how long it played.
+    /// Listens that ended after `after`, oldest first. `after` is when the
+    /// last listen on file ended, so a service that reports only end times
+    /// can measure the first listen from it.
     fn recent_listens(&mut self, after: Option<Timestamp>) -> Result<Vec<Listen>>;
 
     /// Tracks saved to the library since `since`, with when each was saved.

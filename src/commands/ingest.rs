@@ -12,11 +12,11 @@ pub fn history(app: &App, path: &Path) -> Result<()> {
     let store = app.open_store()?;
     let summary = store.import_history(&listens)?;
     println!(
-        "read {} listens: {} recorded, {} already on file; {} polled plays replaced",
+        "read {} listens: {} recorded, {} already on file or covered; {} rougher plays replaced",
         listens.len(),
         summary.recorded,
         listens.len() - summary.recorded,
-        summary.replaced_polled,
+        summary.replaced,
     );
     Ok(())
 }
