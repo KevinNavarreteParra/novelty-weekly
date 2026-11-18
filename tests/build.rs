@@ -13,6 +13,7 @@ use rand::rngs::StdRng;
 
 use novelty::commands::build::{BuildParams, build};
 use novelty::commands::cold_start::cold_start;
+use novelty::commands::report::report;
 use novelty::engine::profile::ProfileParams;
 use novelty::engine::select::SelectParams;
 use novelty::engine::select::allocate::ShareBounds;
@@ -589,4 +590,32 @@ fn an_artist_the_service_lacks_is_searched_once() {
         .collect();
     assert!(!lacking.is_empty(), "the test should hit a missing artist");
     assert!(lacking.iter().all(|(_, n)| **n == 1), "{lacking:?}");
+}
+
+#[test]
+fn the_report_covers_published_picks_and_listening() {
+    let store = store_with_history();
+    let mut service = FakeService::default();
+    build(
+        &store,
+        &FakeKnowledge,
+        &mut service,
+        &params(false),
+        now(),
+        &mut StdRng::seed_from_u64(5),
+    )
+    .unwrap();
+    let text = report(
+        &store,
+        &TimeZone::UTC,
+        4,
+        now() + SignedDuration::from_hours(1),
+    )
+    .unwrap();
+    assert!(text.contains("2026-W47"), "{text}");
+    assert!(
+        text.contains(&format!("{K}     0   0%")),
+        "nothing played yet: {text}"
+    );
+    assert!(text.contains("Listening by month"), "{text}");
 }

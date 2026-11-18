@@ -8,10 +8,14 @@
 //!    [`filters`] every candidate must pass.
 //! 3. [`select`]: the playlist, split across pools by the bandit.
 //! 4. [`feedback`]: how past recommendations fared, which tunes step 3.
+//!
+//! [`report`] measures the outcome the whole app is for: whether picks land,
+//! and whether my listening is broadening.
 
 pub mod candidate;
 pub mod feedback;
 pub mod filters;
 pub mod pools;
 pub mod profile;
+pub mod report;
 pub mod select;
