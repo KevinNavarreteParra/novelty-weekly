@@ -1,14 +1,17 @@
 # Novelty Weekly
 
-A self-hosted weekly Spotify playlist where **novelty is the objective**. Every track is one
-I have never played and was never recommended before, drawn from three pools:
+A self-hosted weekly Spotify playlist where **novelty is the objective**. No track is ever
+recommended twice, and most are ones I have never played, drawn from three pools:
 
 - **deep**: unheard tracks by artists I already like
 - **near**: unheard artists close to my taste (Last.fm similarity)
 - **far**: tags I barely listen to, and random walks away from my taste
 
+A fourth pool, **rediscover**, deliberately isn't novel: artists I loved and stopped playing,
+back with a song I loved or one of theirs I never kept. It holds 5 to 15% of the playlist.
+
 A Thompson-sampling bandit learns from completions, skips and saves which pools land, with
-a 20% floor per pool so it never stops exploring. Design: [docs/spec.md](docs/spec.md).
+a 20% floor per novelty pool so it never stops exploring. Design: [docs/spec.md](docs/spec.md).
 
 **Status:** live since 2026-11-09, publishing weekly from a polled feed plus the last year
 of history (Spotify's account data export). Deep cuts wait for the full Extended Streaming
