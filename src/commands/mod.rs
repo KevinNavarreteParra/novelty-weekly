@@ -8,6 +8,7 @@ pub mod cold_start;
 mod ingest;
 mod ledger;
 pub mod poll;
+pub mod report;
 
 use std::path::PathBuf;
 
@@ -30,7 +31,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Backup => backup::run(&app),
         Command::Poll => poll::run(&app),
         Command::Build(args) => build::run(&app, &args),
-        Command::Report(_) => not_yet("report"),
+        Command::Report(args) => report::run(&app, &args),
         Command::Ledger {
             action: LedgerAction::Show { week },
         } => ledger::show(&app, week.as_deref()),
@@ -83,8 +84,4 @@ impl App {
             USER_AGENT,
         )
     }
-}
-
-fn not_yet(name: &str) -> Result<()> {
-    bail!("`novelty {name}` is not implemented yet")
 }

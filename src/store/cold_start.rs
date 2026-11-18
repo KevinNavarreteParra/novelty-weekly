@@ -92,15 +92,31 @@ impl Store {
         Ok(cold)
     }
 
-    /// Whether a listening-history export has been imported. Until one is,
-    /// builds lean on the cold start.
+    /// Whether a listening-history export of either kind has been imported.
+    /// Until one is, builds lean on the cold start for taste.
     pub fn has_history(&self) -> Result<bool> {
-        let found = self.conn.query_row(
-            "SELECT EXISTS (SELECT 1 FROM plays WHERE provenance = ?1)",
-            [Provenance::History.as_str()],
-            |row| row.get(0),
-        )?;
-        Ok(found)
+        self.has_plays_from(&[Provenance::History, Provenance::BasicHistory])
+    }
+
+    /// Whether a full (every-year) history has been imported. Until one is,
+    /// which of a liked artist's tracks I've heard is uncertain, so builds
+    /// skip deep cuts.
+    pub fn has_full_history(&self) -> Result<bool> {
+        self.has_plays_from(&[Provenance::History])
+    }
+
+    fn has_plays_from(&self, sources: &[Provenance]) -> Result<bool> {
+        for source in sources {
+            let found: bool = self.conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM plays WHERE provenance = ?1)",
+                [source.as_str()],
+                |row| row.get(0),
+            )?;
+            if found {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -190,8 +206,13 @@ mod tests {
         store.record_listens(&[listen(Provenance::Poll)]).unwrap();
         assert!(!store.has_history().unwrap());
         store
-            .import_history(&[listen(Provenance::History)])
+            .import_history(&[listen(Provenance::BasicHistory)])
             .unwrap();
         assert!(store.has_history().unwrap());
+        assert!(!store.has_full_history().unwrap());
+        store
+            .import_history(&[listen(Provenance::History)])
+            .unwrap();
+        assert!(store.has_full_history().unwrap());
     }
 }

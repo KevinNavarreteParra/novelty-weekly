@@ -4,10 +4,13 @@
 //! what the step before produced:
 //!
 //! 1. **Profile**: taste, exposure and seeds, from every play, plus the cold
-//!    start until a history export is imported.
+//!    start until a history export is imported. Saved and ranked tracks, my
+//!    playlists, saved albums and the artists Spotify rates my listening of
+//!    always count as heard.
 //! 2. **Pools**: knowledge gathered for the seeds, then deep, near and far
-//!    candidates. A cold start has no deep candidates: without a history,
-//!    which of a liked artist's tracks I've heard is unknown.
+//!    candidates. Deep cuts wait for a full history: with only a cold start
+//!    or the last year's, which of a liked artist's tracks I've heard is
+//!    uncertain.
 //! 3. **Filters**: the hard rules.
 //! 4. **Beliefs**: how past picks fared, as the bandit's posteriors.
 //! 5. **Select and resolve**: `k` picks across the pools, each matched to a
@@ -203,7 +206,8 @@ pub fn build(
     } else {
         Some(store.cold_start()?)
     };
-    let profile = Profile::build(&plays, cold_start.as_ref(), now, &params.profile);
+    let profile = Profile::build(&plays, cold_start.as_ref(), now, &params.profile)
+        .with_heard(&store.heard()?);
     if profile.ranked_artists().is_empty() {
         bail!(
             "no taste to go on yet: run `novelty ingest-history`, or `novelty cold-start` \
@@ -225,10 +229,10 @@ pub fn build(
 
     // 2. Pools.
     let mut candidates = near_candidates(&gather, &profile, &seeds, params)?;
-    if cold_start.is_none() {
+    if store.has_full_history()? {
         candidates.extend(deep_candidates(&gather, &profile, service)?);
     } else {
-        info!("cold start: no deep cuts until a history export is imported");
+        info!("no deep cuts until a full (Extended Streaming History) export is imported");
     }
     candidates.extend(far_candidates(&gather, &profile, &seeds, params, rng)?);
     info!("{} candidates", candidates.len());
@@ -246,8 +250,10 @@ pub fn build(
         .map(|name| store.resolve_artist(&ArtistRef::named(name.as_str())))
         .collect::<Result<_>>()?;
     let blocked_tags: HashSet<String> = params.blocked_tags.iter().map(|t| tag_key(t)).collect();
+    let on_saved_albums = store.on_saved_albums(candidates.iter().map(|c| c.track))?;
     let filters = Filters {
         profile: &profile,
+        on_saved_albums: &on_saved_albums,
         recommended: &recommended,
         durations: &durations,
         tags: &tags,
@@ -602,7 +608,36 @@ fn publish(
     })?;
     store.set_setting(PLAYLIST_ID, &playlist)?;
     if params.archive {
-        service.publish(None, &format!("Novelty {week}"), &description, &tracks)?;
+        service.publish(None, &snapshot_name(week), &description, &tracks)?;
     }
     Ok(playlist)
+}
+
+/// The name of a week's snapshot playlist (`--archive`).
+fn snapshot_name(week: Week) -> String {
+    format!("Novelty {week}")
+}
+
+/// Whether a playlist is one the app writes: the weekly one, named
+/// `weekly`, or a week's snapshot. These hold recommendations, not songs I
+/// know.
+pub fn is_own_playlist(name: &str, weekly: &str) -> bool {
+    name.trim() == weekly.trim()
+        || name
+            .strip_prefix("Novelty ")
+            .is_some_and(|w| w.trim().parse::<Week>().is_ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn own_playlists_are_the_weekly_one_and_its_snapshots() {
+        let week: Week = "2026-W46".parse().unwrap();
+        assert!(is_own_playlist("Novelty Weekly", "Novelty Weekly"));
+        assert!(is_own_playlist(&snapshot_name(week), "Novelty Weekly"));
+        assert!(!is_own_playlist("Novelty Songs I Love", "Novelty Weekly"));
+        assert!(!is_own_playlist("Chill Cold War", "Novelty Weekly"));
+    }
 }

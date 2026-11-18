@@ -155,6 +155,7 @@ impl Store {
             "top_tracks",
             "popular_tracks",
             "ledger",
+            "playlist_tracks",
         ] {
             self.conn.execute(
                 &format!("UPDATE OR IGNORE {table} SET track_id = ?1 WHERE track_id = ?2"),

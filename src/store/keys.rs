@@ -91,7 +91,28 @@ impl Store {
                 }
             }
         }
+        self.rekey_saved_albums()?;
         Ok((merged_artists, merged_tracks))
+    }
+
+    /// Saved albums are keyed like titles; two that now share a key are one.
+    fn rekey_saved_albums(&self) -> Result<()> {
+        let albums: Vec<(i64, String, String)> = self
+            .conn
+            .prepare("SELECT artist_id, title, title_key FROM saved_albums")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (artist, title, old_key) in albums {
+            let key = title_key(&title);
+            if key != old_key {
+                self.conn.execute(
+                    "UPDATE OR REPLACE saved_albums SET title_key = ?3
+                     WHERE artist_id = ?1 AND title_key = ?2",
+                    params![artist, old_key, key],
+                )?;
+            }
+        }
+        Ok(())
     }
 
     /// Folds `duplicate` into `keep`: its songs (merged with the kept artist's
@@ -126,6 +147,8 @@ impl Store {
             ("popular_tracks", "artist_id"),
             ("top_artists", "artist_id"),
             ("ledger", "artist_id"),
+            ("saved_albums", "artist_id"),
+            ("artist_familiarity", "artist_id"),
         ] {
             self.conn.execute(
                 &format!("UPDATE OR IGNORE {table} SET {column} = ?1 WHERE {column} = ?2"),

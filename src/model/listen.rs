@@ -64,14 +64,70 @@ stored_enum! {
 stored_enum! {
     /// Which kind of source produced a listen, and so how far to trust it.
     pub enum Provenance {
-        /// A full listening-history export: exact `ms_played` and endings.
+        /// A full listening-history export: exact `ms_played` and endings,
+        /// times to the second, every year.
         History => "history",
-        /// A recently-played feed whose next listen is known, so `ms_played`
-        /// came from the gap between them.
+        /// A summary history export: exact `ms_played`, but end times only to
+        /// the minute, no endings or IDs, and (Spotify's account data) only
+        /// the last year.
+        BasicHistory => "basic_history",
+        /// A recently-played feed where the previous listen's end is known,
+        /// so `ms_played` came from the gap since then.
         Poll => "poll",
         /// A recently-played feed where the gap was unusable (a pause, a
-        /// device switch) and `ms_played` is capped at the track's length.
+        /// device switch, no previous listen) and `ms_played` is the track's
+        /// length.
         PollEstimated => "poll_est",
+    }
+}
+
+impl Provenance {
+    /// How complete a record this source keeps. Where two sources cover the
+    /// same span, the plays of the more detailed one stand.
+    pub fn detail(self) -> u8 {
+        match self {
+            Provenance::History => 3,
+            Provenance::BasicHistory => 2,
+            Provenance::Poll | Provenance::PollEstimated => 1,
+        }
+    }
+
+    /// How much later than `started_at + ms_played` a listen may really have
+    /// ended: a source that writes end times to the minute drops the seconds.
+    pub fn end_uncertainty_ms(self) -> i64 {
+        match self {
+            Provenance::BasicHistory => 59_999,
+            _ => 0,
+        }
+    }
+}
+
+/// A gap this much longer than the track means a pause or idle time, so the
+/// gap no longer measures the listen.
+pub const IDLE_SLACK_MS: i64 = 120_000;
+
+/// How long a listen played, for a feed that says only when each listen
+/// *ended*: the time since the previous one ended, `gap_ms`, capped at the
+/// track's length.
+///
+/// A gap well past the length (a pause, idle time, listens the feed lost)
+/// doesn't measure the listen, and neither does a missing one. Then the
+/// listen is assumed to have played out, as [`Provenance::PollEstimated`].
+pub fn played_since_previous(
+    duration_ms: Option<u32>,
+    gap_ms: Option<i64>,
+) -> (Option<u32>, Provenance) {
+    let gap = gap_ms.map(|g| g.max(0));
+    match (duration_ms.map(i64::from), gap) {
+        (Some(length), Some(gap)) if gap <= length + IDLE_SLACK_MS => {
+            (Some(gap.min(length) as u32), Provenance::Poll)
+        }
+        (Some(length), _) => (Some(length as u32), Provenance::PollEstimated),
+        (None, Some(gap)) => (
+            Some(gap.min(i64::from(u32::MAX)) as u32),
+            Provenance::PollEstimated,
+        ),
+        (None, None) => (None, Provenance::PollEstimated),
     }
 }
 

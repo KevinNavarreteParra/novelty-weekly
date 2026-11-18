@@ -2,7 +2,7 @@
 
 Status: draft spec; being built in Rust (see below)
 Owner: Kevin
-Last updated: 2026-11-09
+Last updated: 2026-11-18
 
 ### Where the Rust build departs from this spec
 
@@ -29,6 +29,26 @@ on purpose:
   the database, not `config.toml`. API responses are cached in a separate, disposable
   `cache.db`.
 - **One build per week:** a second non-dry-run build in the same ISO week is refused.
+- **Recently played (§5.2):** `played_at` is when a listen *ended*, not when it started
+  (checked against an export over the same days). A listen is measured from the previous
+  one's end, so none is left pending. The feed omits listens under ~30 s, so quick skips
+  of picks look unplayed until an export covers them.
+- **Account data export (§5.1):** `ingest-history` also reads Spotify's account data
+  package: the last year of streams by name (`StreamingHistory_music_*.json`, end times to
+  the minute, no endings or IDs), plus my playlists, saved albums and `Marquee.json`
+  (Spotify's per-artist rating of how much I listen, including artists I've lapsed on).
+  "Unknown Artist / Unknown Track" rows, all under 30 s and most likely DJ voice-overs,
+  are dropped. A fuller history replaces a rougher one over the days both cover.
+- **Heard apart from plays (§7.3):** saved and ranked tracks, tracks in my playlists, and
+  artists of saved albums or with a Marquee rating count as heard in every build, not
+  only during the cold start. A track on a saved album counts as heard for deep cuts.
+- **Deep cuts wait for the full history (§7.2):** one year of history says too little about
+  which of a liked artist's tracks I've heard, so the deep pool stays off until an Extended
+  Streaming History export is imported. The account data still replaces the cold start for
+  taste.
+- **Report (§10):** listening metrics count streams of 30 s or more, since the poller can't
+  see shorter ones. Text only so far; tag entropy of total listening is not computed (it
+  would need tags for every artist I've played).
 - **Cold start (§5.3):** `novelty cold-start` stores Spotify's top-artist and top-track
   rankings (about a month, six months and a year) and the whole saved library as they
   are, not as synthetic plays. Builds weight them only until a history export is

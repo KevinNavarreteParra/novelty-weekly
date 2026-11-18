@@ -1,5 +1,5 @@
-//! The SQLite database that holds the canonical state; `schema.sql` is the
-//! whole data model in one place.
+//! The SQLite database that holds the canonical state; `schema.sql` and the
+//! versions after it (`schema_v2.sql`, ...) are the whole data model.
 //!
 //! [`Store`] methods are split by what they touch, one file each, so
 //! `store/listens.rs` is everything the store does with listens.
@@ -9,6 +9,7 @@ mod identity;
 mod keys;
 mod knowledge;
 mod ledger;
+mod library;
 mod listens;
 mod state;
 
@@ -23,8 +24,9 @@ use jiff::Timestamp;
 use rusqlite::Connection;
 
 /// Schema versions, applied in order. `PRAGMA user_version` records how many a
-/// database has had. Until the first real deploy, version 1 is edited in place.
-const MIGRATIONS: &[&str] = &[include_str!("schema.sql")];
+/// database has had. A live database has applied them, so a change is a new
+/// version, never an edit to an applied one.
+const MIGRATIONS: &[&str] = &[include_str!("schema.sql"), include_str!("schema_v2.sql")];
 
 pub struct Store {
     conn: Connection,
@@ -53,6 +55,9 @@ impl Store {
         store
             .ensure_current_keys()
             .context("rebuilding name keys")?;
+        store
+            .ensure_polls_measured_from_end()
+            .context("re-measuring polled plays")?;
         Ok(store)
     }
 }

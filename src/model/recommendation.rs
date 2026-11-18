@@ -70,6 +70,14 @@ impl Week {
             week: date.week(),
         }
     }
+
+    /// When the week begins: Monday's first moment on the wall clock of `tz`.
+    pub fn starts_at(self, tz: &TimeZone) -> anyhow::Result<Timestamp> {
+        let monday =
+            jiff::civil::ISOWeekDate::new(self.year, self.week, jiff::civil::Weekday::Monday)?
+                .date();
+        Ok(monday.to_zoned(tz.clone())?.timestamp())
+    }
 }
 
 impl fmt::Display for Week {
@@ -129,6 +137,15 @@ mod tests {
         assert_eq!(Week::containing(at, &tz).to_string(), "2026-W45");
         let later: Timestamp = "2026-11-09T14:00:00Z".parse().unwrap();
         assert_eq!(Week::containing(later, &tz).to_string(), "2026-W46");
+    }
+
+    #[test]
+    fn a_week_starts_at_local_midnight_on_monday() {
+        let tz = TimeZone::get("America/Los_Angeles").unwrap();
+        let week: Week = "2026-W46".parse().unwrap();
+        let start: Timestamp = "2026-11-09T08:00:00Z".parse().unwrap();
+        assert_eq!(week.starts_at(&tz).unwrap(), start);
+        assert_eq!(Week::containing(start, &tz), week);
     }
 
     #[test]
